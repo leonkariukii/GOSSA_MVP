@@ -1,15 +1,5 @@
-import React from 'react';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: false,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
 
 async function fetchJson(path, options = {}) {
   const headers = {
@@ -35,6 +25,10 @@ async function fetchJson(path, options = {}) {
     throw new Error(payload?.error?.message || 'Request failed');
   }
 
+  if (Array.isArray(payload?.data)) {
+    return payload;
+  }
+
   return payload.data ?? payload;
 }
 
@@ -49,6 +43,7 @@ function useSession() {
 }
 
 function LoginPanel({ onLoggedIn }) {
+  const queryClient = useQueryClient();
   const [email, setEmail] = useState('owner@example.com');
   const [password, setPassword] = useState('ChangeMe123!');
 
@@ -134,6 +129,7 @@ function DashboardView() {
 }
 
 function MechanicsView({ csrfToken }) {
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['mechanics'],
     queryFn: () => fetchJson('/mechanics'),
@@ -185,11 +181,13 @@ function MechanicsView({ csrfToken }) {
           </li>
         ))}
       </ul>
+      {createMutation.isError ? <p className="error" role="alert">{createMutation.error.message}</p> : null}
     </div>
   );
 }
 
 function JobsView({ csrfToken }) {
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['jobs'],
     queryFn: () => fetchJson('/jobs'),
@@ -247,6 +245,7 @@ function JobsView({ csrfToken }) {
           </li>
         ))}
       </ul>
+      {createMutation.isError ? <p className="error" role="alert">{createMutation.error.message}</p> : null}
     </div>
   );
 }
@@ -294,6 +293,7 @@ function AppShell() {
         </nav>
         <button className="ghost" onClick={() => logoutMutation.mutate()}>Log out</button>
       </header>
+      {logoutMutation.isError ? <p className="error" role="alert">{logoutMutation.error.message}</p> : null}
 
       {tab === 'dashboard' ? <DashboardView /> : null}
       {tab === 'mechanics' ? <MechanicsView csrfToken={session?.csrf_token} /> : null}
@@ -303,6 +303,15 @@ function AppShell() {
 }
 
 function App() {
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        refetchOnWindowFocus: false,
+      },
+    },
+  }));
+
   return (
     <QueryClientProvider client={queryClient}>
       <AppShell />
