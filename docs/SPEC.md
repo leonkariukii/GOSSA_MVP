@@ -8,7 +8,7 @@ The **GOSSA (Garage Operations & Service Administration)** REST API handles gara
 
 - **Base URL:** `/api/v1`
 - **Transport and format:** HTTPS and JSON (`application/json`), as defined by RFC 8259.
-- **Authentication:** Every endpoint requires `Authorization: Bearer <access_token>`. Requests without a valid token receive `401 Unauthorized`; authenticated callers without permission receive `403 Forbidden`.
+- **Authentication:** Every endpoint in this specification requires valid authentication credentials. Requests without valid credentials receive `401 Unauthorized`; authenticated callers without permission receive `403 Forbidden`.
 - **Timestamps:** UTC in ISO 8601 format, for example `2026-10-04T07:30:00Z`.
 - **Identifiers:** Mechanic IDs are UUIDs. Job card IDs are system-generated strings, for example `JC-2026-091`.
 - **Property naming:** JSON fields use `snake_case`.
@@ -36,9 +36,9 @@ The **GOSSA (Garage Operations & Service Administration)** REST API handles gara
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Unique, system-generated job card code. |
-| `vehicle_reg` | string | Vehicle registration plate; 1–20 characters after trimming. |
-| `model` | string | Vehicle make/model; 1–100 characters after trimming. |
-| `reported_fault` | string | Intake description; 1–2,000 characters after trimming. |
+| `vehicle_reg` | string | Vehicle registration plate; must be non-empty after trimming. |
+| `model` | string | Vehicle make/model; must be non-empty after trimming. |
+| `reported_fault` | string | Intake description; must be non-empty after trimming. |
 | `status` | enum | `UNASSIGNED`, `IN_PROGRESS`, `COMPLETED`, or `CANCELLED`. |
 | `assigned_mechanic_id` | UUID or `null` | Assigned mechanic; `null` when no mechanic is assigned. |
 | `version` | integer | Positive resource version, incremented on every successful job-card mutation. |
@@ -74,7 +74,7 @@ All errors use this shape; `details` is omitted when there are no field-specific
 | HTTP status | Error code | Meaning |
 |---|---|---|
 | `400 Bad Request` | `VALIDATION_ERROR` | Invalid JSON, missing/invalid fields, or invalid query parameter. |
-| `401 Unauthorized` | `UNAUTHENTICATED` | Missing, expired, or invalid bearer token. |
+| `401 Unauthorized` | `UNAUTHENTICATED` | Missing, expired, or invalid authentication credentials. |
 | `403 Forbidden` | `FORBIDDEN` | Caller is authenticated but not permitted to perform the operation. |
 | `404 Not Found` | `RESOURCE_NOT_FOUND` | Job card or mechanic ID does not exist. |
 | `409 Conflict` | `WORKFLOW_CONFLICT` | Operation conflicts with the current workflow state, mechanic availability, or uniqueness constraint. |
@@ -208,7 +208,7 @@ Request:
 }
 ```
 
-All fields are required strings and are trimmed before validating lengths specified in the job-card model. The server generates `id`; the new card has `status: "UNASSIGNED"`, `assigned_mechanic_id: null`, and `version: 1`. Returns `201 Created`, the job-card resource, `Location: /api/v1/job-cards/{id}`, and `ETag: "v1"`.
+All fields are required non-empty strings after trimming. The server generates `id`; the new card has `status: "UNASSIGNED"`, `assigned_mechanic_id: null`, and `version: 1`. Returns `201 Created`, the job-card resource, `Location: /api/v1/job-cards/{id}`, and `ETag: "v1"`.
 
 ### 7.3 Get a job card
 
