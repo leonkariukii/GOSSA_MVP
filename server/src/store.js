@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, '../data');
 const storeFile = path.join(dataDir, 'store.json');
+let cachedStore = null;
 
 export function createDefaultGarage() {
   return {
@@ -18,6 +19,10 @@ export function createDefaultGarage() {
 }
 
 export async function ensureStore() {
+  if (cachedStore) {
+    return cachedStore;
+  }
+
   await mkdir(dataDir, { recursive: true });
 
   try {
@@ -32,8 +37,9 @@ export async function ensureStore() {
         jobHistory: [],
         nextJobSequence: {},
       };
+      cachedStore = empty;
       await writeFile(storeFile, JSON.stringify(empty, null, 2));
-      return empty;
+      return cachedStore;
     }
 
     const parsed = JSON.parse(content);
@@ -44,7 +50,8 @@ export async function ensureStore() {
     parsed.jobs ??= [];
     parsed.jobHistory ??= [];
     parsed.nextJobSequence ??= {};
-    return parsed;
+    cachedStore = parsed;
+    return cachedStore;
   } catch {
     const fresh = {
       garage: createDefaultGarage(),
@@ -55,12 +62,19 @@ export async function ensureStore() {
       jobHistory: [],
       nextJobSequence: {},
     };
+    cachedStore = fresh;
     await writeFile(storeFile, JSON.stringify(fresh, null, 2));
-    return fresh;
+    return cachedStore;
   }
 }
 
 export async function saveStore(store) {
+  const activeStore = store ?? cachedStore;
+  if (!activeStore) {
+    return;
+  }
+
+  cachedStore = activeStore;
   await mkdir(dataDir, { recursive: true });
-  await writeFile(storeFile, JSON.stringify(store, null, 2));
+  await writeFile(storeFile, JSON.stringify(activeStore, null, 2));
 }
