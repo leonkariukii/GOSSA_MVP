@@ -1,133 +1,155 @@
 # GOSSA System Specification
 
-**Status:** Product and engineering baseline for the MVP
+**Status:** v1 product and engineering baseline
 **Audience:** Coding agents, engineers, and reviewers
-**Product:** GOSSA, a multi-tenant workshop/garage operations application
+**Product:** GOSSA, a single-garage workshop operations application
 
-## 1. Purpose and product outcome
+## 1. Purpose and repository baseline
 
-GOSSA helps an independent garage manage its customers, vehicles, staff, and repair work from one application. The MVP must let an authenticated garage team find a vehicle, create and assign a job card, follow its progress, and see the work that needs attention. Data belonging to one garage must never be visible to another.
+GOSSA v1 lets a garage owner keep a mechanic roster, create and assign repair jobs, and track work through a small operational lifecycle. The application must use persistent storage. A frontend mockup, hard-coded dashboard, or browser-only store is not a completed implementation.
 
-Deliver a usable, responsive application backed by a persistent API and database. A frontend-only mockup, hard-coded dashboard, or browser-only data store is not a complete MVP. If implementation is staged, keep the application runnable at every stage and clearly mark any temporary development adapter as non-production.
+The repository currently has a minimal React/Vite frontend at the repository root (`src/`, `index.html`) and does not yet implement the API, database, authentication, or product UI. Implement the server in a new root-level `server/` directory; do not move the existing frontend. See the root `AGENTS.md` for the pinned stack and coding-agent instructions.
 
-### 1.1 Repository baseline
+## 2. v1 scope
 
-At the time this specification was written, the repository contains a minimal React 19 / Vite 8 frontend (`src/App.jsx`, `src/main.jsx`, and `src/index.css`) and has no implemented backend, data model, authentication flow, or product UI. Preserve the existing frontend stack unless the repository has since established a different convention. Inspect the current repository before choosing backend libraries, persistence, or deployment technology; prefer one maintainable application and database over unnecessary services.
+### 2.1 In scope
 
-Requirements below describe the target product, not features that already exist. Do not represent a planned feature as implemented.
+- One garage and one owner account.
+- Owner login, logout, and current-session lookup.
+- Garage settings and a dashboard.
+- Mechanic roster records (mechanics do not log in).
+- Repair job creation, mechanic assignment, simple status transitions, history, search, filters, sorting, and pagination.
+- Server-side validation, role/access checks, tenant isolation, optimistic concurrency, database migrations, and focused automated tests.
+- Responsive, usable owner-facing React application with clear loading, empty, and error states.
 
-## 2. Scope
+### 2.2 Explicitly out of scope for v1
 
-### 2.1 MVP must include
+- Inventory, parts purchasing, billing, estimates, invoices, payments, taxes, accounting, and all money fields/calculations.
+- Mechanic logins, staff accounts, invitations, multiple user roles, and public user registration.
+- Customer and vehicle master records, customer portals, and customer self-service. Store the customer/vehicle details needed for each job directly on that job as a historical snapshot.
+- Multi-garage users, garage switching, multi-garage reporting, and tenant provisioning over a public API.
+- Notifications, integrations, and mobile-native applications.
 
-1. Sign-in, sign-out, and authenticated application access.
-2. Garage-scoped users and role-based access.
-3. An operational dashboard showing active work and useful counts.
-4. Customer records and each customer's vehicles.
-5. Job cards, their work items, mechanic assignment, status changes, and history.
-6. Search, filtering, sorting, and pagination for operational lists.
-7. Validation, actionable errors, loading/empty states, and responsive layouts.
-8. Persistent storage, tenant isolation, automated tests, and documented local setup.
+Do not add out-of-scope fields, endpoints, UI, or dependencies preemptively.
 
-### 2.2 Explicitly out of MVP scope
+## 3. Users, garage, and access
 
-Unless an existing product requirement is added, do not implement payment processing, accounting/tax filing, supplier purchasing, parts inventory, payroll, customer self-service, SMS/email delivery, mobile-native apps, multiple currencies per job, or multi-garage reporting. Keep interfaces extensible without building these features preemptively.
+### 3.1 Garage entity
 
-## 3. Users, tenancy, and permissions
+The database has exactly one garage in v1. Define a `garages` table with:
 
-### 3.1 Tenant model
-
-- A **garage** is the tenant and owns its users, customers, vehicles, job cards, and audit events.
-- Every tenant-owned record has a server-assigned immutable `garage_id`. Never accept a client-supplied `garage_id` as proof of access.
-- A user acts within one selected garage per authenticated session. The verified identity/session determines the active garage and role.
-- Every read, write, relationship lookup, search, aggregate, and background task must be constrained to the active `garage_id`. Enforce this in the service/data-access boundary, not only in the UI.
-- A request for a known record owned by another garage returns `403 FORBIDDEN`. A nonexistent record returns `404 NOT_FOUND`. Do not reveal foreign record details in an error.
-- Validate that referenced customers, vehicles, and mechanics belong to the same garage as the job card.
-
-### 3.2 Roles
-
-Roles are scoped to a garage:
-
-| Role | Capabilities |
+| Field | Type and rules |
 |---|---|
-| `owner` | All garage operations, user/garage settings, and role management. |
-| `manager` | All operational records and staff assignment; cannot change ownership. |
-| `service_advisor` | Manage customers, vehicles, job cards, and assignments; cannot manage users or garage settings. |
-| `mechanic` | View assigned work and update permitted work/status fields on assigned job cards; cannot manage customers, users, or garage settings. |
+| `id` | Opaque immutable ID, primary key. |
+| `name` | Required trimmed string, 1-120 characters. |
+| `time_zone` | Required valid IANA time-zone name, maximum 64 characters. |
+| `created_at`, `updated_at` | UTC timestamps. |
+| `version` | Positive integer, starts at 1. |
 
-Enforce authorization on the server for every route/action. Hiding a control in the frontend is not authorization. Reject unknown roles and deny by default. User invitations and account recovery may use a development-only mechanism until a real delivery provider is configured; do not create a public registration flow that permits users to choose a garage or role.
+Every owner, mechanic, job, history record, and audit record has a server-assigned `garage_id` referencing this row. Never accept a client-supplied tenant ID as authorization. Keep tenant predicates in every database read/write, relationship lookup, search, aggregate, and background task even though v1 provisions only one garage. This preserves isolation if the product later grows.
 
-## 4. Core workflows
+### 3.2 Owner authentication
 
-### 4.1 Find or register a customer and vehicle
+- There is exactly one `owner` user associated with the one garage. Only the owner can authenticate and use the application.
+- Do not implement roles, mechanic credentials, staff accounts, public registration, or garage selection.
+- Create the initial garage and owner using the idempotent command `npm --prefix server run bootstrap:owner`. It reads the garage name, time zone, owner name/email, and password from interactive secure input or documented environment variables, hashes the password, refuses to overwrite an existing owner, and never prints the password. Do not seed a default production password.
+- Use server-managed sessions in secure, HttpOnly, SameSite cookies. A refresh-token flow does not exist in v1; do not issue refresh tokens or add refresh endpoints. Rotate the session ID on login, expire and revoke sessions on logout, and apply CSRF protection to state-changing cookie-authenticated requests.
+- Return a session-bound CSRF token in login and current-session responses. Require it in the `X-CSRF-Token` header for every state-changing authenticated request, including logout. A missing/invalid CSRF token returns `403 CSRF_FAILED`; this response does not reveal whether a tenant resource exists.
+- Login failures must use a generic response that does not reveal whether an account exists. Rate-limit login attempts and use a maintained password-hashing library (Argon2id preferred).
+- All application API routes require the authenticated owner session. Unauthenticated requests return `401 UNAUTHENTICATED`.
 
-An authorized staff member searches customers and vehicles, opens an existing record, or creates a customer and one or more vehicles. Prevent accidental duplicate vehicles in the same garage by normalizing registration identifiers and checking uniqueness. Allow an explicit, audited correction if a legitimate identifier changes.
+### 3.3 Mechanic roster
 
-Customer fields: `id`, `garage_id`, `first_name`, `last_name`, `phone`, optional `email`, optional `notes`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
+Mechanics are roster records, not system users; they have no password, session, or login endpoint. Only the owner manages the roster.
 
-Vehicle fields: `id`, `garage_id`, `customer_id`, `registration`, optional `make`, `model`, `year`, `color`, optional `vin`, optional `odometer_km`, `created_at`, `updated_at`, `version`, and optional `archived_at`. A VIN, when supplied, must be validated and unique within a garage. Store registration in normalized form for comparisons while preserving a display form.
+Owner user fields: `id`, `garage_id` (unique; only one owner per garage), `name` (required, 1-120 characters), `email` (required, valid, maximum 254 characters, normalized to lowercase and unique), `password_hash`, `created_at`, `updated_at`, and `version`. The login request password must contain 12-128 characters; never truncate passwords.
 
-### 4.2 Create and manage a job card
+Mechanic fields: `id`, `garage_id`, `name`, optional `phone`, optional `skills`, `duty_status`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
 
-An authorized advisor or manager creates a job for a vehicle, records the customer's reported concern, odometer reading, optional target completion date, one or more work items, and an optional mechanic assignment. The job number is unique and human-readable within its garage (for example, `JC-2026-004`); allocate it atomically on the server.
+The three `duty_status` values are:
 
-Job card fields: `id`, `garage_id`, `job_number`, `vehicle_id`, `customer_id`, `created_by`, optional `assigned_mechanic_id`, `status`, `customer_concern`, optional `diagnosis`, optional `internal_notes`, optional `odometer_km`, `line_items`, optional `estimated_completion_at`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
+- `available`: can be assigned work.
+- `busy`: currently assigned to a job in `in_progress`; derived from the active job and not directly set by a user.
+- `off_duty`: owner-designated unavailable mechanic; cannot be assigned new work.
 
-Each line item has an immutable ID, description, positive quantity, unit price, and line total. Use a decimal-safe representation (integer minor units internally or a decimal type); never use floating-point arithmetic for money. API monetary values are decimal strings with an explicit garage currency, for example `{ "amount": "125.50", "currency": "USD" }`. Currency is configured per garage and cannot be changed on an existing job. Do not assume a particular country, currency, tax regime, or time zone.
+The API computes `busy` from active jobs. When no longer assigned to an in-progress job, a mechanic returns to `available` unless the owner has set the record `off_duty`. A transition to `in_progress` requires an assigned, available mechanic. Only `available` mechanics may be assigned or start work. An `off_duty` mechanic cannot be set off duty while assigned to an in-progress job. Mechanic roster changes never create or modify user accounts. A mechanic's version increments when its derived duty status changes.
 
-### 4.3 Track repair work
+## 4. Jobs and lifecycle
 
-Job statuses and allowed transitions:
+### 4.1 Job record
 
-| Status | Meaning | Allowed next status |
-|---|---|---|
-| `draft` | Work has been recorded but not authorized to begin. | `awaiting_approval`, `approved`, `cancelled` |
-| `awaiting_approval` | Estimate is awaiting customer authorization. | `approved`, `cancelled` |
-| `approved` | Authorized and ready to start. | `in_progress`, `cancelled` |
-| `in_progress` | Work is actively being performed. | `waiting_for_parts`, `completed`, `cancelled` |
-| `waiting_for_parts` | Work is blocked pending parts. | `in_progress`, `completed`, `cancelled` |
-| `completed` | Recorded work is complete. | `invoiced` |
-| `invoiced` | Job has been handed off to an external invoicing process or marked invoiced. | No further transition in MVP. |
-| `cancelled` | Work was cancelled. | No further transition in MVP. |
+A job contains a snapshot of identifying details rather than foreign keys to customer/vehicle master records. This avoids inconsistent `customer_id`/`vehicle_id` relationships and preserves the job details even if the customer or vehicle changes later.
 
-Only the server performs transitions, validates the transition graph, and records actor, timestamp, previous status, next status, and optional note in an append-only job history. The frontend must not optimistically show a transition as successful before the server confirms it. A mechanic may start, pause for parts, resume, and complete only an assigned job; completion by a mechanic requires all work items to be resolved. Managers/advisors may perform operational transitions. Ownership, assignment, and transition permissions are checked server-side.
+Job fields:
 
-A mechanic may have at most one job in `in_progress` at a time. Enforce this atomically when assigning or transitioning jobs; return `409 MECHANIC_OCCUPIED` with a safe, useful explanation when the constraint is violated. Jobs in `waiting_for_parts` do not occupy a mechanic.
+| Field | Type and rules |
+|---|---|
+| `id` | Opaque immutable ID, primary key. |
+| `garage_id` | Server-assigned tenant ID. |
+| `job_number` | Server-generated, unique within garage, format `JC-YYYY-NNN` with a sequence that can grow beyond three digits. |
+| `status` | One of `open`, `in_progress`, `waiting`, `completed`, `cancelled`. |
+| `customer_name` | Required trimmed string, 1-160 characters. |
+| `customer_phone` | Optional trimmed string, maximum 32 characters. |
+| `vehicle_registration` | Required trimmed display string, 1-32 characters; normalize for search. |
+| `vehicle_make` | Optional string, maximum 80 characters. |
+| `vehicle_model` | Optional string, maximum 80 characters. |
+| `vehicle_year` | Optional integer from 1886 through the current year + 1. |
+| `odometer_km` | Optional non-negative integer. |
+| `work_requested` | Required trimmed string, 1-4000 characters. |
+| `diagnosis` | Optional trimmed string, maximum 4000 characters. |
+| `work_performed` | Optional trimmed string, maximum 4000 characters. |
+| `internal_notes` | Optional trimmed string, maximum 4000 characters. |
+| `assigned_mechanic_id` | Optional mechanic ID belonging to this garage. |
+| `created_by_user_id` | Server-assigned owner user ID. |
+| `created_at`, `updated_at` | UTC timestamps. |
+| `version` | Positive integer, starts at 1. |
+| `archived_at` | Optional UTC timestamp; archive rather than hard-delete. |
 
-### 4.4 Dashboard and work queues
+There are no money, estimate, invoice, parts, approval, or line-item fields in v1.
 
-The dashboard is scoped to the active garage and provides:
+### 4.2 Status transitions
 
-- Counts of open jobs and jobs by actionable status.
-- A prioritized list of active/recent jobs with job number, vehicle, customer, assignee, status, and last update.
-- Work assigned to the current mechanic when the signed-in role is `mechanic`.
-- Clear paths to create a job, add a customer, and open a job.
+| Current status | Allowed next status |
+|---|---|
+| `open` | `in_progress`, `cancelled` |
+| `in_progress` | `waiting`, `completed`, `cancelled` |
+| `waiting` | `in_progress`, `cancelled` |
+| `completed` | None (terminal). |
+| `cancelled` | None (terminal). |
 
-All counts and rows must come from persisted data, respect permissions, and use the same filters as their corresponding list views. Do not fabricate demo metrics in production.
+Only the server applies transitions. Every successful transition appends a history record with `id`, `garage_id`, `job_id`, `actor_user_id`, `from_status`, `to_status`, optional `note`, and `created_at`. History is append-only. A transition to `in_progress` requires an assigned available mechanic.
 
-## 5. Data and business rules
+An `available` mechanic may have at most one job in `in_progress` at a time. Assignment and status changes that affect this constraint must be enforced atomically. Assigning a mechanic does not itself start a job. When transitioning a job to `in_progress`, reject assignment to an off-duty mechanic or a mechanic already working on another job. Reassigning an in-progress job must check both mechanics and update atomically.
 
-- Use opaque, non-guessable IDs for API resource identifiers. IDs and `garage_id` are immutable.
-- Use UTC ISO 8601 timestamps in the API. Render dates/times in the garage's configured time zone; store that time zone explicitly.
-- Store phone numbers as entered plus a normalized searchable representation where practical. Validate email format without rejecting valid international addresses.
-- Trim and validate user text server-side. Set documented maximum lengths and reject invalid values with field-level errors.
-- Do not hard-delete customers, vehicles, users, or jobs that have operational history. Use archive/deactivate semantics and preserve historical references.
-- Job line-item totals and job totals are calculated server-side. The client may preview them but cannot set authoritative totals.
-- Changes to job status, assignment, line items, customer/vehicle links, archival, and role membership increment the affected record's `version`.
-- Record an audit event for sign-in/security events as appropriate, user/role changes, archival, job creation, assignment, status transitions, and edits to job financial/work details. Audit records are tenant-scoped, append-only, and readable only by authorized owner/manager roles. Never put credentials, tokens, or unnecessary personal data in logs.
-- Define database foreign keys, tenant-aware uniqueness constraints, and indexes for frequent garage-scoped lookups. At minimum index tenant ID, job status/update time, job number, customer name/phone, vehicle registration, mechanic assignment/status, and foreign keys.
-- Database migrations must be versioned, repeatable in deployment, and safe for existing data. Do not rely on production auto-sync or destructive schema generation.
+## 5. Validation and data rules
+
+- Trim text input and reject empty required values, invalid types, unknown fields, oversized request bodies, and invalid enum values. Never silently truncate.
+- For `PATCH`, omitted fields remain unchanged; nullable optional fields explicitly set to `null` are cleared; required fields cannot be set to `null`.
+- Request and response JSON uses `snake_case`.
+- Validate phone numbers permissively for international formats; do not assume a country. Validate `time_zone` against IANA time-zone data.
+- Normalize vehicle registration for searching and duplicate detection by trimming, uppercasing, and removing internal whitespace and separator punctuation. Preserve the submitted display form. Within the garage, reject a new non-archived job if another non-archived job has the same normalized registration and is not `completed` or `cancelled`; return `409 DUPLICATE_ACTIVE_VEHICLE_JOB`. Historical completed/cancelled jobs may share a registration.
+- Store timestamps in UTC and return ISO 8601 strings. Render them in the garage's configured time zone.
+- IDs and `garage_id` are immutable. Use database foreign keys, tenant-aware uniqueness constraints, and indexes for tenant ID, job status/update time, job number, normalized registration, mechanic assignment/status, and foreign keys.
+- Apply optimistic concurrency to updates, assignment changes, transitions, and archival. Every successful mutation increments the affected record's `version`.
+- Use versioned database migrations, safe for existing data. Do not use destructive production schema auto-sync.
+- Log useful request context and request IDs, but never passwords, cookies, authorization/session tokens, or unnecessary personal data.
 
 ## 6. HTTP API contract
 
-### 6.1 General conventions
+### 6.1 Conventions
 
-- API base path: `/api/v1`.
-- Transport: HTTPS in deployed environments; JSON request/response bodies use `Content-Type: application/json` and UTF-8.
-- Resource collection endpoints are plural. Use standard HTTP semantics and appropriate status codes.
-- Use `GET` for reads, `POST` for creation and explicit actions, `PATCH` for partial updates, and `DELETE` only where safe/permitted (normally archive instead).
-- List endpoints support `page` (1-based), `page_size` (default 25, maximum 100), documented filters, and allowlisted sort fields/directions. Return stable ordering with an ID tie-breaker.
-- List response shape:
+- Base path: `/api/v1`. Deployed environments use HTTPS.
+- JSON request and response bodies use UTF-8 and `Content-Type: application/json`.
+- `GET` reads, `POST` creates or performs an explicit action, `PATCH` partially updates, and `DELETE` is not used for operational records; use archive actions/fields.
+- Creation returns `201 Created` with a `Location` header. Successful updates/actions return `200 OK` with the updated resource unless noted. Logout returns `204 No Content`.
+- All mutable resources expose `version` and an `ETag`, for example response header `ETag: "v2"`. Every `PATCH`, assignment, transition, or archive request must include `If-Match: "v2"`. Missing precondition returns `428`; stale version returns `412`. Check and update atomically.
+- Do not mass-assign input. Accept only fields defined for each operation. Query sort keys and filters are allowlisted.
+- All list endpoints use these common query parameters:
+  - `page`: positive integer, default `1`.
+  - `page_size`: integer `1..100`, default `25`.
+  - `sort_by`: endpoint-specific allowlist.
+  - `order`: `asc` or `desc`, default `desc`.
+- List response. Results use stable ordering with an ID tie-breaker; reject unsupported sort keys and directions.
 
 ```json
 {
@@ -138,50 +160,97 @@ All counts and rows must come from persisted data, respect permissions, and use 
 }
 ```
 
-- Use `201 Created` and a `Location` header for creation, `204 No Content` only for successful responses without a body, `400` for malformed requests, `401` for missing/invalid authentication, `403` for insufficient permission/foreign tenant, `404` for missing resources, `409` for business/uniqueness conflicts, `412` for stale versions, `422` for field/domain validation, and `428` when a required precondition is missing.
-- Never return stack traces, SQL details, secrets, or internal infrastructure information to clients.
+- Status codes: `400` malformed JSON/query, `401` unauthenticated, `404` missing or foreign-tenant resource, `409` business/uniqueness conflict, `412` stale version, `422` field/domain validation, `428` missing `If-Match`, `429` rate limit, and `500` unexpected server error.
+- Return `404 NOT_FOUND` for both nonexistent and foreign-tenant resources. Do not reveal whether a foreign resource exists.
 
-### 6.2 Authentication and session security
+### 6.2 Authentication and garage endpoints
 
-- Authenticate API requests with `Authorization: Bearer <access-token>` or an equivalently secure server-managed session if the existing backend standard supports it.
-- Tokens must be signed and verified by a trusted server configuration. Claims include `sub` (user ID), `garage_id`, `role`, `iat`, and `exp`. Do not trust client-decoded claims. Validate signature, issuer/audience where configured, expiry, and account/session revocation.
-- Provide `POST /auth/login`, `POST /auth/logout`, and `GET /auth/me`. Login errors must not reveal whether a particular email exists. Rate-limit login and recovery endpoints.
-- Keep browser access tokens in memory where bearer tokens are used; do not put access or refresh tokens in local storage, session storage, URLs, or logs. Prefer secure, HttpOnly, SameSite cookies for refresh/session credentials; apply CSRF defenses to cookie-authenticated state-changing requests.
-- Require strong credential handling using a maintained password-hashing library (Argon2id preferred; otherwise a suitable adaptive hash). Never store plaintext or reversible passwords.
-- Require authorization for all application data routes; unauthenticated requests receive `401`.
-
-### 6.3 Required endpoints
-
-Implement only endpoints required by MVP, but keep their contract consistent:
-
-| Method and path | Purpose | Access |
+| Method and path | Request body | Success |
 |---|---|---|
-| `POST /auth/login` | Authenticate. | Public, rate-limited |
-| `POST /auth/logout` | End current session/token. | Authenticated |
-| `GET /auth/me` | Return current user, role, and garage context. | Authenticated |
-| `GET /dashboard` | Return tenant- and role-scoped summary and recent work. | Authenticated |
-| `GET /customers` / `POST /customers` | Search/list and create customers. | Owner, manager, advisor |
-| `GET /customers/{id}` / `PATCH /customers/{id}` | Read/update a customer. | Owner, manager, advisor |
-| `GET /vehicles` / `POST /vehicles` | Search/list and create vehicles. | Owner, manager, advisor |
-| `GET /vehicles/{id}` / `PATCH /vehicles/{id}` | Read/update a vehicle. | Owner, manager, advisor |
-| `GET /jobs` / `POST /jobs` | Filter/list and create job cards. | Owner, manager, advisor; mechanic gets assigned jobs only |
-| `GET /jobs/{id}` / `PATCH /jobs/{id}` | Read/update permitted job fields. | By role and assignment |
-| `POST /jobs/{id}/transitions` | Apply a validated status transition. | By role and assignment |
-| `GET /jobs/{id}/history` | Read status and audit history for a job. | By role and assignment |
-| `GET /mechanics` | List active mechanics for assignment. | Owner, manager, advisor |
-| `GET /users` / `POST /users` / `PATCH /users/{id}` | List, invite/create, deactivate, or change roles. | Owner; manager may list only |
+| `POST /auth/login` | `{ "email": "owner@example.com", "password": "..." }`; email max 254 chars, password 12-128 chars. | `200` `{ "data": { "user": { "id": "...", "email": "...", "name": "...", "role": "owner" }, "garage": { "id": "...", "name": "...", "time_zone": "..." }, "csrf_token": "..." } }`; sets secure session cookie. |
+| `POST /auth/logout` | No body; requires `X-CSRF-Token`. | `204`; revokes current session and clears cookie. |
+| `GET /auth/me` | No body. | `200` `{ "data": { "user": { "id": "...", "email": "...", "name": "...", "role": "owner" }, "garage": { "id": "...", "name": "...", "time_zone": "..." }, "csrf_token": "..." } }`. |
+| `GET /garage` | No body. | `200` `{ "data": { "id": "...", "name": "...", "time_zone": "...", "version": 1 } }`. |
+| `PATCH /garage` | `{ "name": "Northside Garage", "time_zone": "Africa/Nairobi" }`; either field may be omitted, but at least one is required. | `200` with updated garage. Requires `If-Match`. |
 
-Do not expose unrestricted mass assignment. Accept only fields permitted for the endpoint and role. Filter fields, sort keys, and page sizes must be validated/allowlisted. Add endpoint-specific request/response schemas and tests.
+`POST /auth/login` and logout are the only public/session lifecycle endpoints; there is no register, refresh, garage-selection, or refresh-token endpoint. The bootstrap command is the only initial account creation path.
 
-### 6.4 Error envelope
+### 6.3 Dashboard endpoints
 
-Every API error uses this shape and a status value matching the HTTP response:
+| Method and path | Query/body | Success |
+|---|---|---|
+| `GET /dashboard` | Optional `date_from`, `date_to` as `YYYY-MM-DD`; range maximum 366 days. | `200` `{ "data": { "open_count": 0, "in_progress_count": 0, "waiting_count": 0, "completed_today_count": 0, "recent_jobs": [] } }`. `recent_jobs` contains at most 10 job summaries ordered by `updated_at desc`. |
+
+Job summary shape: `{ "id": "...", "job_number": "...", "status": "open", "customer_name": "...", "vehicle_registration": "...", "assigned_mechanic": { "id": "...", "name": "..." } | null, "updated_at": "..." }`.
+
+### 6.4 Mechanic endpoints
+
+| Method and path | Request/query | Success |
+|---|---|---|
+| `GET /mechanics` | Common pagination; optional `q` (1-120 chars, matches name/phone), `duty_status` (`available`, `busy`, `off_duty`), `include_archived` (`true`/`false`, default `false`); `sort_by`: `name`, `created_at`, `updated_at`. | `200` paginated mechanics. |
+| `POST /mechanics` | `{ "name": "Alex Mechanic", "phone": "+254700000000", "skills": "Diagnostics, brakes" }`; `name` required (1-120 chars); optional `phone` (max 32 chars) and `skills` (max 500 chars) may be omitted or null. | `201` mechanic. Initial duty status is `available`. |
+| `GET /mechanics/{id}` | No body. | `200` mechanic. |
+| `PATCH /mechanics/{id}` | `{ "name": "Alex M.", "phone": "+254700000000", "skills": "Diagnostics" }`; name 1-120 chars; phone max 32 chars; skills max 500 chars; at least one field required. No direct `duty_status` or `garage_id` input. | `200` mechanic. Requires `If-Match`. |
+| `POST /mechanics/{id}/off-duty` | No body. | `200` updated mechanic with `duty_status: "off_duty"`. Requires `If-Match`; rejected with `409 MECHANIC_HAS_ACTIVE_JOB` if currently working. |
+| `POST /mechanics/{id}/available` | No body. | `200` updated mechanic with `duty_status: "available"`. Requires `If-Match`; rejected with `409 MECHANIC_HAS_ACTIVE_JOB` if an active job is in progress. |
+| `POST /mechanics/{id}/archive` | No body. | `200` archived mechanic. Requires `If-Match`; rejected if assigned to an `in_progress` job. |
+
+Mechanic response shape: `{ "data": { "id": "...", "garage_id": "...", "name": "...", "phone": null, "skills": null, "duty_status": "available", "created_at": "...", "updated_at": "...", "version": 1, "archived_at": null } }`.
+
+### 6.5 Job endpoints
+
+| Method and path | Request/query | Success |
+|---|---|---|
+| `GET /jobs` | Common pagination; optional `q` (1-120 chars, searches job number, customer name, and normalized registration), `status` (one exact lifecycle value), `mechanic_id`, `include_archived` (`true`/`false`, default `false`), `created_from`, `created_to` (`YYYY-MM-DD`, interpreted in garage time zone); `sort_by`: `job_number`, `status`, `created_at`, `updated_at`. Date range must be valid, `created_from` must not be later than `created_to`, and the range must be no longer than 366 days. | `200` paginated jobs. |
+| `POST /jobs` | `{ "customer_name": "Sam Example", "customer_phone": "+254700000000", "vehicle_registration": "KDA 123A", "vehicle_make": "Toyota", "vehicle_model": "Corolla", "vehicle_year": 2020, "odometer_km": 85000, "work_requested": "Inspect front brakes", "internal_notes": "Call before extra work" }`. Required: `customer_name`, `vehicle_registration`, `work_requested`. Other fields optional and nullable. No client may supply `garage_id`, `job_number`, `status`, `version`, timestamps, or `created_by_user_id`. | `201` job created with `status: "open"` and unassigned mechanic. |
+| `GET /jobs/{id}` | No body. | `200` job. |
+| `PATCH /jobs/{id}` | `{ "customer_name": "...", "customer_phone": "...", "vehicle_registration": "...", "vehicle_make": "...", "vehicle_model": "...", "vehicle_year": 2020, "odometer_km": 85000, "work_requested": "...", "diagnosis": "...", "work_performed": "...", "internal_notes": "..." }`; any subset of editable fields, at least one required. Cannot update status, assignment, tenant, number, version, or timestamps here. | `200` updated job. Requires `If-Match`. |
+| `POST /jobs/{id}/assignment` | `{ "mechanic_id": "opaque-id" }` to assign, or `{ "mechanic_id": null }` to unassign. | `200` updated job. Requires `If-Match`; mechanic must be active, available, and in the same garage. |
+| `POST /jobs/{id}/transitions` | `{ "to_status": "in_progress", "note": "Started inspection" }`; `to_status` required; `note` optional, maximum 500 characters. | `200` updated job. Requires `If-Match`. |
+| `GET /jobs/{id}/history` | Common pagination; `sort_by` only `created_at`; `order` must be `desc` (newest first). | `200` paginated immutable history events. |
+| `POST /jobs/{id}/archive` | No body. | `200` archived job. Requires `If-Match`; terminal jobs only. |
+
+Job response shape:
+
+```json
+{
+  "data": {
+    "id": "opaque-id",
+    "garage_id": "opaque-id",
+    "job_number": "JC-2026-004",
+    "status": "open",
+    "customer_name": "Sam Example",
+    "customer_phone": null,
+    "vehicle_registration": "KDA 123A",
+    "vehicle_make": "Toyota",
+    "vehicle_model": "Corolla",
+    "vehicle_year": 2020,
+    "odometer_km": 85000,
+    "work_requested": "Inspect front brakes",
+    "diagnosis": null,
+    "work_performed": null,
+    "internal_notes": null,
+    "assigned_mechanic_id": null,
+    "created_by_user_id": "opaque-id",
+    "created_at": "2026-10-04T08:15:00Z",
+    "updated_at": "2026-10-04T08:15:00Z",
+    "version": 1,
+    "archived_at": null
+  }
+}
+```
+
+History response item: `{ "id": "...", "job_id": "...", "actor_user_id": "...", "from_status": "open", "to_status": "in_progress", "note": null, "created_at": "..." }`.
+
+### 6.6 Error response contract
+
+All errors use this JSON envelope; `status` equals the HTTP status:
 
 ```json
 {
   "error": {
     "code": "MECHANIC_OCCUPIED",
-    "message": "This mechanic is assigned to another active job.",
+    "message": "This mechanic is already assigned to an active job.",
     "status": 409,
     "timestamp": "2026-10-04T08:15:00Z",
     "request_id": "req_01J...",
@@ -190,92 +259,86 @@ Every API error uses this shape and a status value matching the HTTP response:
 }
 ```
 
-`details` may contain safe field-level validation errors such as `{ "field": "registration", "code": "duplicate", "message": "This registration is already in use." }`. Omit `details` when not applicable. `request_id` must be safe to share with support and correlate to server logs. Error messages must not disclose foreign-tenant data or implementation internals. The UI presents useful messages and preserves unsaved form values after recoverable errors.
+`details` is optional and, when present, contains safe field errors of shape `{ "field": "customer_name", "code": "too_long", "message": "Must be 160 characters or fewer." }`. Never include secrets, stack traces, SQL details, or foreign-tenant data.
+
+| HTTP status | Error code | Meaning |
+|---|---|---|
+| 400 | `BAD_REQUEST` | Malformed JSON, invalid query encoding, or malformed request syntax. |
+| 401 | `UNAUTHENTICATED` | Missing, expired, or invalid session; login credentials are invalid. |
+| 403 | `CSRF_FAILED` | Missing or invalid session-bound CSRF token. |
+| 404 | `NOT_FOUND` | Resource is nonexistent, archived where hidden, or belongs to another tenant. |
+| 409 | `CONFLICT` | Generic uniqueness or business-rule conflict. |
+| 409 | `MECHANIC_OCCUPIED` | Mechanic already has another in-progress job. |
+| 409 | `MECHANIC_UNAVAILABLE` | Mechanic is off duty, archived, or otherwise unavailable for assignment/start. |
+| 409 | `MECHANIC_HAS_ACTIVE_JOB` | Attempt to set off-duty/archive a mechanic with an in-progress job. |
+| 409 | `DUPLICATE_ACTIVE_VEHICLE_JOB` | Another active job has the same normalized registration. |
+| 409 | `INVALID_STATUS_TRANSITION` | Requested status transition is not allowed. |
+| 412 | `PRECONDITION_FAILED` | `If-Match` version is stale. |
+| 422 | `VALIDATION_ERROR` | A field or domain constraint is invalid. |
+| 428 | `PRECONDITION_REQUIRED` | Required `If-Match` header is absent. |
+| 429 | `RATE_LIMITED` | Request limit exceeded. |
+| 500 | `INTERNAL_ERROR` | Unexpected server error; client receives no internal details. |
 
 ## 7. Concurrency and consistency
 
-- Every persisted mutable record has an integer `version` starting at 1 and an HTTP `ETag` derived from that version.
-- Every update, archive, assignment change, and status transition requires `If-Match` with the current `ETag` (for example, `If-Match: "v2"`). Creation and read-only calls do not require it.
-- Missing required `If-Match` returns `428 PRECONDITION_REQUIRED`; stale version returns `412 PRECONDITION_FAILED` with the current version/ETag where safe. The client must refresh/reconcile and ask the user to retry; never silently overwrite concurrent changes.
-- Apply version check and mutation atomically in the database. Enforce unique job numbers, normalized registrations, and mechanic active-job occupancy with database constraints or transaction-safe locking as appropriate.
-- Multi-record changes (for example, creating a job and its line items/history) must be transactional. Failed transactions must leave no partial records.
+- Every mutable resource has an integer `version` starting at 1 and an `ETag` derived from it (for example, version 2 returns `"v2"`).
+- Every `PATCH`, assignment, transition, or archive mutation requires `If-Match`. Missing header returns `428 PRECONDITION_REQUIRED`; stale version returns `412 PRECONDITION_FAILED` and may include the current version/ETag.
+- Check the version and apply the mutation atomically. Never silently overwrite a concurrent update. The frontend refreshes and lets the owner reconcile a `412`.
+- Job-number allocation, mechanic occupancy, status transitions, and history insertion must be transaction-safe. If a mutation fails, no partial history/job changes remain.
+- Reassignment of an in-progress job must atomically release the old mechanic, validate the new mechanic, and assign the new mechanic. Changes in derived mechanic duty status also increment that mechanic's version.
 
 ## 8. Frontend requirements
 
-- Build a clear operational application shell with garage identity, primary navigation, current-user menu, and sign-out.
-- Required views: sign-in; dashboard; customer list/detail/create/edit; vehicle list/detail/create/edit; job list/detail/create/edit; role-appropriate mechanic work queue; and useful not-found/forbidden/error states.
-- Reuse shared layout, form controls, tables/lists, status badges, dialogs, and notification patterns. Keep domain logic out of giant page components; use focused components and API/service modules consistent with existing project conventions.
-- Every data view must implement loading, empty, success, and failure states. Forms must label inputs, validate on both client and server, identify field errors accessibly, prevent duplicate submissions, and warn before discarding meaningful unsaved changes.
-- Provide confirmation for irreversible or high-impact actions (cancel job, archive record, change role). Provide recoverable undo only if the backend can safely support it.
-- Search and filters must be reflected in page state and be shareable via the URL where practical. Paginate large datasets instead of downloading all records.
-- Treat API data as untrusted. Render user-supplied content as text; do not inject HTML.
-- UI must be usable at 360px viewport width and at common desktop widths, with no horizontal page overflow. Tables may become cards or use a deliberate contained scroll region on small screens.
-- Meet WCAG 2.2 AA fundamentals: semantic landmarks/headings, keyboard operation, visible focus, adequate contrast, associated labels, accessible names for icon controls, announced asynchronous errors/status changes, and reduced-motion support.
-- Use a consistent design system rather than starter-template styling. Do not add decorative animation or dependencies without a user-visible need.
+- Keep the frontend in the existing root `src/` directory. Implement sign-in, dashboard, job list/detail/create/edit, mechanic roster/list/detail/edit, assignment, status actions, and useful not-found/error states.
+- Use React JSX and TanStack Query as specified in the root `AGENTS.md`. Keep API calls in a small client/service layer; keep components focused and domain rules testable.
+- Show loading, empty, success, and failure states. Forms need labels, field errors, duplicate-submit prevention, and preservation of entered data after recoverable server errors.
+- Search/filter/sort/page state should be reflected in the URL where practical. Use server pagination; do not download all jobs or mechanics to filter locally.
+- Do not mark a transition or assignment successful before the server confirms it. On success, update/invalidate relevant job, history, mechanic, and dashboard queries; do not assume a specific cache key name.
+- Render user-supplied values as text, never injected HTML. Require confirmation for job cancellation and archiving.
+- Keep the UI usable on narrow and desktop screens, with semantic HTML, keyboard-operable controls, visible focus, and accessible labels.
 
-## 9. Performance and reliability
+## 9. Security, performance, and reliability
 
-- Keep list requests paginated and return only fields required for the view. Add server-side search/filter/sort rather than fetching all tenant data to filter in the browser.
-- Avoid N+1 database access in dashboard and list endpoints. Use appropriate indexes and bounded queries.
-- Set request/body size limits, timeouts, and a documented maximum page size. Handle database/network failure explicitly; do not return success-shaped empty data.
-- Avoid duplicate requests/submissions and cancel or ignore stale frontend requests when filters change.
-- Target: common list/dashboard requests complete within 500 ms at the 95th percentile under the MVP's expected small-garage load, excluding network latency; define and measure a representative local/staging dataset before claiming this target.
-- The application must build cleanly and display a clear recoverable error if the API is unavailable. Production data must persist across restarts and deployments.
+- Enforce server-side input validation, authorization, tenant scoping, and allowlisted query fields. Use parameterized SQL.
+- Use HTTPS in deployment, least-privilege database credentials, secret injection, and separate development/test/production configuration. Provide a placeholder-only `.env.example`; never commit secrets.
+- Protect cookie-authenticated state-changing requests against CSRF; configure explicit trusted CORS origins. Do not use wildcard credentialed origins.
+- Apply request body limits, timeouts, rate limiting for login, and structured logs with request IDs. Redact passwords, cookies, session identifiers, and personal data not needed for operations.
+- Paginate list endpoints and select only required fields. Avoid N+1 database queries; index frequent tenant-scoped lookups. Do not return success-shaped empty results when dependencies fail.
+- Validate required production configuration at startup. Do not silently use development defaults in production.
+- The application must build and display a recoverable error when the API is unavailable. Persistent records must survive service restarts.
 
-## 10. Security and privacy
+## 10. MVP acceptance criteria
 
-- Enforce TLS in deployment, least privilege for database/service credentials, secure secret injection, and separate development/test/production configuration.
-- Validate and authorize on the server; use parameterized database operations and allowlisted sort/filter fields.
-- Protect against XSS, CSRF where cookie auth is used, brute-force login, credential leakage, and insecure direct object references.
-- Apply secure cookie flags where cookies are used; configure CORS to explicit trusted origins, never wildcard credentialed origins.
-- Do not commit secrets or use production credentials in tests. Provide a safe `.env.example` containing placeholders only.
-- Logs must be structured, include request ID and useful operational context, redact credentials/tokens, and avoid unnecessary customer personal data. Never log passwords, authorization headers, or full tokens.
-- Define backup/restore expectations for the selected database before production deployment. Document data retention/deletion responsibilities; do not claim compliance certifications without verification.
+The core MVP is acceptable when:
 
-## 11. Configuration and operations
+1. The documented bootstrap command creates the initial garage and owner safely and idempotently; the owner can log in, retrieve the session, and log out.
+2. Unauthenticated access is rejected, and session cookies are configured securely.
+3. The owner can create, search, update, mark off duty/available, and archive mechanics; mechanics have no login or user account.
+4. The owner can create and search jobs with customer/vehicle snapshots and no money fields; job numbers are unique and server-generated.
+5. The owner can assign/unassign mechanics and transition jobs only along the defined lifecycle; mechanic occupancy/off-duty constraints are atomic.
+6. Job history records each successful transition; invalid transitions do not change the job or append history.
+7. Every mutable API operation enforces `ETag`/`If-Match`; stale updates return `412` without overwriting data.
+8. Foreign-tenant and nonexistent resource identifiers both return `404`; tenant scope is applied in all relevant data paths.
+9. Data survives browser refreshes and application/database restarts.
+10. The configured production build, linter, focused unit tests, and API/integration tests pass.
 
-- Configure database URL, signing/session secrets, allowed frontend origins, environment, and logging level through environment variables or the deployment platform's secret manager.
-- Validate required configuration at startup and fail clearly if production configuration is incomplete. Never silently fall back to insecure production defaults.
-- Provide local development instructions for installing dependencies, starting frontend and backend, applying migrations, seeding non-sensitive demo data, running tests, linting, and building.
-- Demo/seed accounts and sample records are development/test only, explicitly documented, and must not be enabled with production defaults.
-- Provide health/readiness endpoints appropriate to the chosen backend. Readiness checks required dependencies without disclosing secrets or internal topology.
-- Document deployment, migration order, backup/restore, and a rollback strategy for schema/application releases.
+## 11. Hardening phase (after core MVP)
 
-## 12. Testing and acceptance criteria
+The following are valuable but must not block declaring the core MVP complete. Plan and track them separately:
 
-### 12.1 Required automated coverage
+- Full WCAG 2.2 AA audit and remediation beyond accessible semantic/keyboard fundamentals required for usable forms.
+- Measure and optimize a representative staging workload toward dashboard/list API latency below 500 ms at p95, excluding network latency.
+- Production end-to-end browser coverage for full owner and job workflows.
+- Document and rehearse production backup, restore, retention, and disaster-recovery procedures.
+- Additional load, resilience, and observability work based on deployment context.
 
-- Unit tests for domain validation, permitted status transitions, totals, normalization, role permissions, and pagination.
-- API/integration tests for authentication, tenant isolation, authorization, validation, uniqueness conflicts, transaction behavior, optimistic concurrency, and mechanic occupancy.
-- Frontend tests for critical forms and status actions, loading/empty/error states, and role-specific navigation/actions.
-- End-to-end smoke tests for sign-in, customer/vehicle creation, job creation and assignment, mechanic workflow, completion, and sign-out.
-- Tests must use isolated test data and must not call production services.
+Do not claim these hardening targets have been met without measurement or evidence.
 
-### 12.2 MVP acceptance checklist
+## 12. Implementation guidance
 
-The MVP is acceptable only when all of the following are true:
-
-1. A user can authenticate and receives only the correct garage context and role permissions.
-2. A manager/advisor can create and find a customer and vehicle; duplicate normalized registrations are rejected with an actionable conflict.
-3. A manager/advisor can create a job with line items; the server assigns a unique job number and calculates authoritative totals.
-4. A permitted user can assign a mechanic and move a job through only allowed transitions; invalid transitions are rejected.
-5. A mechanic cannot access unassigned jobs or perform manager-only actions, and cannot start a second active job.
-6. Two garages cannot read or mutate each other's records, including by guessing IDs, searching, filtering, or using relationships.
-7. Concurrent stale updates fail with `412` and do not erase the first successful update.
-8. Refreshing the browser or restarting the application does not lose persisted records.
-9. Dashboard and lists show persisted, garage-scoped data and provide accessible loading, empty, and error states.
-10. The application passes its production build, configured linter, and relevant automated tests with no new errors.
-
-## 13. Implementation guidance for coding agents
-
-1. Inspect the repository and identify existing conventions, uncommitted changes, available tooling, and any backend or design work added since this spec was written. Preserve unrelated user work.
-2. Turn the requirements into small vertical slices: persistence/auth/tenant boundary; customer and vehicle management; job lifecycle; dashboard and UI refinement. Keep each slice runnable and test it before moving on.
-3. Reuse existing dependencies and patterns. Add a dependency only when it is needed, justified, and compatible with the current stack. Do not introduce a distributed architecture for this MVP.
-4. Implement authorization, validation, transactions, tenant scoping, and concurrency in the backend first; then connect the UI to the real API. Temporary mocks must be isolated behind an adapter and must never masquerade as production persistence.
-5. Add or update tests with each behavior change. Run the smallest relevant tests/linter/build after changes, then the full required checks before declaring completion.
-6. Update setup/API/deployment documentation when implementation decisions affect how another engineer runs or operates the system.
-7. When a requirement cannot be met due to a missing product decision or external service, document the blocker and a safe default; do not silently invent billing, legal, tax, or regional behavior.
-
-### Decisions intentionally left to implementation discovery
-
-The repository does not currently establish a backend language/framework, database vendor, deployment platform, email provider, garage currency, or time zone. Select the simplest suitable options after inspecting the repo and deployment context. Keep the API and domain behavior defined here stable, document the choices, and do not treat a vendor-specific choice as a product requirement.
+1. Inspect the current repository, worktree, and available scripts before editing; preserve unrelated changes and the existing root frontend.
+2. Build vertical slices: PostgreSQL schema/migrations and owner bootstrap; session/auth and tenant boundary; mechanic roster; job lifecycle/API; frontend screens and integration.
+3. Implement server-side validation, authorization, transactions, tenant scoping, and concurrency before relying on frontend checks.
+4. Add focused tests with each slice, and run the smallest relevant checks before the full MVP verification set.
+5. Update this specification when a product/API contract changes; update setup documentation when stack or operations change.
+6. If an external decision is truly required, ask instead of inventing billing, legal, regional, or out-of-scope behavior.
