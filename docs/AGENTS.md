@@ -1,42 +1,35 @@
 # Agent System Guidelines (`AGENTS.md`)
 
-## 1. Operating Rules for AI Agents
-1. **Read Specifications First:** Before modifying or creating code, consult `docs/SPEC.md`, `docs/DATABASE.md`, and `docs/WORKFLOWS.md`. Do NOT guess API routes, table schemas, or state transitions.
-2. **Never Break Contracts:** API request payloads, database column names, and state enum values must match `docs/SPEC.md` and `docs/DATABASE.md` exactly.
-3. **Strict Validation:** Use Zod schemas for form inputs and API response validation.
-4. **No Direct State Manipulation:** All status changes (e.g., mechanic duty status, job card state) must flow through defined RPC functions or TanStack Query mutations that preserve atomic side effects.
-5. **Ask When Uncertain:** If a requirement is ambiguous or absent from the `docs/` folder, state your assumption clearly before writing code.
+## 1. Operating Rules for AI Coding Agents
+1. **Read Contracts Before Coding:** Consult `docs/SPEC.md` for API endpoint contracts and JSON responses before generating backend or frontend code.
+2. **Never Break Contracts:** Every request body, JSON key, error payload, and HTTP status code MUST match `docs/SPEC.md` exactly. Use `snake_case` for API JSON payloads and map to `camelCase` in React state.
+3. **Atomic State Operations:** All state transitions (e.g., assigning a job card, completing a job) must be executed as atomic backend operations. Frontend TanStack Query mutations MUST invalidate BOTH `["job-cards"]` and `["mechanics"]` cache keys simultaneously upon success.
+4. **No Speculative Assumptions:** If an endpoint parameter or state rule is missing or ambiguous, stop and consult `docs/SPEC.md`. Do not invent new fields, routes, or database columns.
 
 ---
 
-## 2. Technical Stack & Tooling
+## 2. Project Architecture & Stack
 
-* **Language:** TypeScript (Strict mode enabled)
-* **Frontend:** React 18+ (Vite), React Router v6+, Tailwind CSS
-* **State & Data Fetching:** TanStack Query v5 (`@tanstack/react-query`)
-* **Backend Platform:** Supabase (PostgreSQL, Auth, PostgREST, RLS, Edge Functions)
-* **Form & Validation:** React Hook Form + Zod
-* **Testing:** Vitest, React Testing Library, Mock Service Worker (MSW)
+The repository uses an isolated client-server workspace structure:
 
----
-
-## 3. Essential CLI Commands
-
-```bash
-# Development
-npm run dev              # Starts Vite dev server
-npm run build            # Typecheck and production build
-npm run preview          # Preview production build locally
-
-# Code Quality & Testing
-npm run typecheck        # Run tsc --noEmit
-npm run lint             # ESLint execution
-npm run format           # Prettier code formatting
-npm run test             # Run unit and integration tests via Vitest
-npm run test:ui          # Vitest UI mode
-
-# Supabase Local Development
-npx supabase start       # Start local PostgreSQL / Auth containers
-npx supabase gen types   # Generate TypeScript types from local DB schema
-npx supabase db reset    # Apply migrations and seeds
-```
+```text
+gossa-app/
+├── client/                   # React (.jsx) Frontend (Vite)
+│   ├── src/
+│   │   ├── api/              # Axios/Fetch API wrappers matching SPEC.md
+│   │   ├── components/       # Reusable UI components (Modal, Cards, Badges)
+│   │   ├── features/         # Feature modules (job-cards, mechanics)
+│   │   ├── hooks/            # Custom React hooks & TanStack Query options
+│   │   └── App.jsx
+│   └── package.json
+├── server/                   # Node.js / Express REST API
+│   ├── src/
+│   │   ├── controllers/      # Route request handlers
+│   │   ├── middleware/       # Auth, Tenant isolation, Validation
+│   │   ├── models/           # Data access & database queries
+│   │   ├── routes/           # Express router endpoints
+│   │   └── server.js
+│   └── package.json
+├── docs/                     # System specifications
+│   └── SPEC.md
+└── AGENTS.md

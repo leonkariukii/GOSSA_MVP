@@ -1,263 +1,281 @@
-# GOSSA REST API Specification
+# GOSSA System Specification
 
-## 1. Overview
+**Status:** Product and engineering baseline for the MVP
+**Audience:** Coding agents, engineers, and reviewers
+**Product:** GOSSA, a multi-tenant workshop/garage operations application
 
-The **GOSSA (Garage Operations & Service Administration)** REST API handles garage workflow execution, job card intake, mechanic availability, and vehicle service assignments. It is the backend interface for the desktop and web manager portals.
+## 1. Purpose and product outcome
 
-## 2. Conventions
+GOSSA helps an independent garage manage its customers, vehicles, staff, and repair work from one application. The MVP must let an authenticated garage team find a vehicle, create and assign a job card, follow its progress, and see the work that needs attention. Data belonging to one garage must never be visible to another.
 
-- **Base URL:** `/api/v1`
-- **Transport and format:** HTTPS and JSON (`application/json`), as defined by RFC 8259.
-- **Authentication:** Every endpoint in this specification requires valid authentication credentials. Requests without valid credentials receive `401 Unauthorized`; authenticated callers without permission receive `403 Forbidden`.
-- **Timestamps:** UTC in ISO 8601 format, for example `2026-10-04T07:30:00Z`.
-- **Identifiers:** Mechanic IDs are UUIDs. Job card IDs are system-generated strings, for example `JC-2026-091`.
-- **Property naming:** JSON fields use `snake_case`.
-- **Mutations:** Workflow operations that touch a job card or mechanic are atomic: either all affected records and versions are updated, or none are.
+Deliver a usable, responsive application backed by a persistent API and database. A frontend-only mockup, hard-coded dashboard, or browser-only data store is not a complete MVP. If implementation is staged, keep the application runnable at every stage and clearly mark any temporary development adapter as non-production.
 
-## 3. Data Models
+### 1.1 Repository baseline
 
-### 3.1 Mechanic
+At the time this specification was written, the repository contains a minimal React 19 / Vite 8 frontend (`src/App.jsx`, `src/main.jsx`, and `src/index.css`) and has no implemented backend, data model, authentication flow, or product UI. Preserve the existing frontend stack unless the repository has since established a different convention. Inspect the current repository before choosing backend libraries, persistence, or deployment technology; prefer one maintainable application and database over unnecessary services.
 
-| Field | Type | Description |
+Requirements below describe the target product, not features that already exist. Do not represent a planned feature as implemented.
+
+## 2. Scope
+
+### 2.1 MVP must include
+
+1. Sign-in, sign-out, and authenticated application access.
+2. Garage-scoped users and role-based access.
+3. An operational dashboard showing active work and useful counts.
+4. Customer records and each customer's vehicles.
+5. Job cards, their work items, mechanic assignment, status changes, and history.
+6. Search, filtering, sorting, and pagination for operational lists.
+7. Validation, actionable errors, loading/empty states, and responsive layouts.
+8. Persistent storage, tenant isolation, automated tests, and documented local setup.
+
+### 2.2 Explicitly out of MVP scope
+
+Unless an existing product requirement is added, do not implement payment processing, accounting/tax filing, supplier purchasing, parts inventory, payroll, customer self-service, SMS/email delivery, mobile-native apps, multiple currencies per job, or multi-garage reporting. Keep interfaces extensible without building these features preemptively.
+
+## 3. Users, tenancy, and permissions
+
+### 3.1 Tenant model
+
+- A **garage** is the tenant and owns its users, customers, vehicles, job cards, and audit events.
+- Every tenant-owned record has a server-assigned immutable `garage_id`. Never accept a client-supplied `garage_id` as proof of access.
+- A user acts within one selected garage per authenticated session. The verified identity/session determines the active garage and role.
+- Every read, write, relationship lookup, search, aggregate, and background task must be constrained to the active `garage_id`. Enforce this in the service/data-access boundary, not only in the UI.
+- A request for a known record owned by another garage returns `403 FORBIDDEN`. A nonexistent record returns `404 NOT_FOUND`. Do not reveal foreign record details in an error.
+- Validate that referenced customers, vehicles, and mechanics belong to the same garage as the job card.
+
+### 3.2 Roles
+
+Roles are scoped to a garage:
+
+| Role | Capabilities |
+|---|---|
+| `owner` | All garage operations, user/garage settings, and role management. |
+| `manager` | All operational records and staff assignment; cannot change ownership. |
+| `service_advisor` | Manage customers, vehicles, job cards, and assignments; cannot manage users or garage settings. |
+| `mechanic` | View assigned work and update permitted work/status fields on assigned job cards; cannot manage customers, users, or garage settings. |
+
+Enforce authorization on the server for every route/action. Hiding a control in the frontend is not authorization. Reject unknown roles and deny by default. User invitations and account recovery may use a development-only mechanism until a real delivery provider is configured; do not create a public registration flow that permits users to choose a garage or role.
+
+## 4. Core workflows
+
+### 4.1 Find or register a customer and vehicle
+
+An authorized staff member searches customers and vehicles, opens an existing record, or creates a customer and one or more vehicles. Prevent accidental duplicate vehicles in the same garage by normalizing registration identifiers and checking uniqueness. Allow an explicit, audited correction if a legitimate identifier changes.
+
+Customer fields: `id`, `garage_id`, `first_name`, `last_name`, `phone`, optional `email`, optional `notes`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
+
+Vehicle fields: `id`, `garage_id`, `customer_id`, `registration`, optional `make`, `model`, `year`, `color`, optional `vin`, optional `odometer_km`, `created_at`, `updated_at`, `version`, and optional `archived_at`. A VIN, when supplied, must be validated and unique within a garage. Store registration in normalized form for comparisons while preserving a display form.
+
+### 4.2 Create and manage a job card
+
+An authorized advisor or manager creates a job for a vehicle, records the customer's reported concern, odometer reading, optional target completion date, one or more work items, and an optional mechanic assignment. The job number is unique and human-readable within its garage (for example, `JC-2026-004`); allocate it atomically on the server.
+
+Job card fields: `id`, `garage_id`, `job_number`, `vehicle_id`, `customer_id`, `created_by`, optional `assigned_mechanic_id`, `status`, `customer_concern`, optional `diagnosis`, optional `internal_notes`, optional `odometer_km`, `line_items`, optional `estimated_completion_at`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
+
+Each line item has an immutable ID, description, positive quantity, unit price, and line total. Use a decimal-safe representation (integer minor units internally or a decimal type); never use floating-point arithmetic for money. API monetary values are decimal strings with an explicit garage currency, for example `{ "amount": "125.50", "currency": "USD" }`. Currency is configured per garage and cannot be changed on an existing job. Do not assume a particular country, currency, tax regime, or time zone.
+
+### 4.3 Track repair work
+
+Job statuses and allowed transitions:
+
+| Status | Meaning | Allowed next status |
 |---|---|---|
-| `id` | UUID | Unique mechanic identifier. |
-| `name` | string | Full name; 1–100 characters after trimming. |
-| `specialization` | string | Primary technical domain; 1–150 characters after trimming. |
-| `status` | enum | `AVAILABLE`, `ACTIVE_JOB`, or `OFF_DUTY`. |
-| `active_job_card_id` | string or `null` | ID of the assigned, non-terminal job card, if any. |
-| `version` | integer | Positive resource version, incremented on every successful mechanic mutation. |
-| `created_at` | timestamp | Creation time in UTC. |
-| `updated_at` | timestamp | Most recent update time in UTC. |
+| `draft` | Work has been recorded but not authorized to begin. | `awaiting_approval`, `approved`, `cancelled` |
+| `awaiting_approval` | Estimate is awaiting customer authorization. | `approved`, `cancelled` |
+| `approved` | Authorized and ready to start. | `in_progress`, `cancelled` |
+| `in_progress` | Work is actively being performed. | `waiting_for_parts`, `completed`, `cancelled` |
+| `waiting_for_parts` | Work is blocked pending parts. | `in_progress`, `completed`, `cancelled` |
+| `completed` | Recorded work is complete. | `invoiced` |
+| `invoiced` | Job has been handed off to an external invoicing process or marked invoiced. | No further transition in MVP. |
+| `cancelled` | Work was cancelled. | No further transition in MVP. |
 
-`ACTIVE_JOB` means the mechanic is reserved for a non-terminal job card, including an assigned card that has not yet been started. A mechanic can have at most one such card. `AVAILABLE` mechanics have no active card; `OFF_DUTY` mechanics cannot be assigned.
+Only the server performs transitions, validates the transition graph, and records actor, timestamp, previous status, next status, and optional note in an append-only job history. The frontend must not optimistically show a transition as successful before the server confirms it. A mechanic may start, pause for parts, resume, and complete only an assigned job; completion by a mechanic requires all work items to be resolved. Managers/advisors may perform operational transitions. Ownership, assignment, and transition permissions are checked server-side.
 
-### 3.2 Job card
+A mechanic may have at most one job in `in_progress` at a time. Enforce this atomically when assigning or transitioning jobs; return `409 MECHANIC_OCCUPIED` with a safe, useful explanation when the constraint is violated. Jobs in `waiting_for_parts` do not occupy a mechanic.
 
-| Field | Type | Description |
+### 4.4 Dashboard and work queues
+
+The dashboard is scoped to the active garage and provides:
+
+- Counts of open jobs and jobs by actionable status.
+- A prioritized list of active/recent jobs with job number, vehicle, customer, assignee, status, and last update.
+- Work assigned to the current mechanic when the signed-in role is `mechanic`.
+- Clear paths to create a job, add a customer, and open a job.
+
+All counts and rows must come from persisted data, respect permissions, and use the same filters as their corresponding list views. Do not fabricate demo metrics in production.
+
+## 5. Data and business rules
+
+- Use opaque, non-guessable IDs for API resource identifiers. IDs and `garage_id` are immutable.
+- Use UTC ISO 8601 timestamps in the API. Render dates/times in the garage's configured time zone; store that time zone explicitly.
+- Store phone numbers as entered plus a normalized searchable representation where practical. Validate email format without rejecting valid international addresses.
+- Trim and validate user text server-side. Set documented maximum lengths and reject invalid values with field-level errors.
+- Do not hard-delete customers, vehicles, users, or jobs that have operational history. Use archive/deactivate semantics and preserve historical references.
+- Job line-item totals and job totals are calculated server-side. The client may preview them but cannot set authoritative totals.
+- Changes to job status, assignment, line items, customer/vehicle links, archival, and role membership increment the affected record's `version`.
+- Record an audit event for sign-in/security events as appropriate, user/role changes, archival, job creation, assignment, status transitions, and edits to job financial/work details. Audit records are tenant-scoped, append-only, and readable only by authorized owner/manager roles. Never put credentials, tokens, or unnecessary personal data in logs.
+- Define database foreign keys, tenant-aware uniqueness constraints, and indexes for frequent garage-scoped lookups. At minimum index tenant ID, job status/update time, job number, customer name/phone, vehicle registration, mechanic assignment/status, and foreign keys.
+- Database migrations must be versioned, repeatable in deployment, and safe for existing data. Do not rely on production auto-sync or destructive schema generation.
+
+## 6. HTTP API contract
+
+### 6.1 General conventions
+
+- API base path: `/api/v1`.
+- Transport: HTTPS in deployed environments; JSON request/response bodies use `Content-Type: application/json` and UTF-8.
+- Resource collection endpoints are plural. Use standard HTTP semantics and appropriate status codes.
+- Use `GET` for reads, `POST` for creation and explicit actions, `PATCH` for partial updates, and `DELETE` only where safe/permitted (normally archive instead).
+- List endpoints support `page` (1-based), `page_size` (default 25, maximum 100), documented filters, and allowlisted sort fields/directions. Return stable ordering with an ID tie-breaker.
+- List response shape:
+
+```json
+{
+  "data": [],
+  "page": 1,
+  "page_size": 25,
+  "total": 0
+}
+```
+
+- Use `201 Created` and a `Location` header for creation, `204 No Content` only for successful responses without a body, `400` for malformed requests, `401` for missing/invalid authentication, `403` for insufficient permission/foreign tenant, `404` for missing resources, `409` for business/uniqueness conflicts, `412` for stale versions, `422` for field/domain validation, and `428` when a required precondition is missing.
+- Never return stack traces, SQL details, secrets, or internal infrastructure information to clients.
+
+### 6.2 Authentication and session security
+
+- Authenticate API requests with `Authorization: Bearer <access-token>` or an equivalently secure server-managed session if the existing backend standard supports it.
+- Tokens must be signed and verified by a trusted server configuration. Claims include `sub` (user ID), `garage_id`, `role`, `iat`, and `exp`. Do not trust client-decoded claims. Validate signature, issuer/audience where configured, expiry, and account/session revocation.
+- Provide `POST /auth/login`, `POST /auth/logout`, and `GET /auth/me`. Login errors must not reveal whether a particular email exists. Rate-limit login and recovery endpoints.
+- Keep browser access tokens in memory where bearer tokens are used; do not put access or refresh tokens in local storage, session storage, URLs, or logs. Prefer secure, HttpOnly, SameSite cookies for refresh/session credentials; apply CSRF defenses to cookie-authenticated state-changing requests.
+- Require strong credential handling using a maintained password-hashing library (Argon2id preferred; otherwise a suitable adaptive hash). Never store plaintext or reversible passwords.
+- Require authorization for all application data routes; unauthenticated requests receive `401`.
+
+### 6.3 Required endpoints
+
+Implement only endpoints required by MVP, but keep their contract consistent:
+
+| Method and path | Purpose | Access |
 |---|---|---|
-| `id` | string | Unique, system-generated job card code. |
-| `vehicle_reg` | string | Vehicle registration plate; must be non-empty after trimming. |
-| `model` | string | Vehicle make/model; must be non-empty after trimming. |
-| `reported_fault` | string | Intake description; must be non-empty after trimming. |
-| `status` | enum | `UNASSIGNED`, `IN_PROGRESS`, `COMPLETED`, or `CANCELLED`. |
-| `assigned_mechanic_id` | UUID or `null` | Assigned mechanic; `null` when no mechanic is assigned. |
-| `version` | integer | Positive resource version, incremented on every successful job-card mutation. |
-| `created_at` | timestamp | Creation time in UTC. |
-| `updated_at` | timestamp | Most recent update time in UTC. |
+| `POST /auth/login` | Authenticate. | Public, rate-limited |
+| `POST /auth/logout` | End current session/token. | Authenticated |
+| `GET /auth/me` | Return current user, role, and garage context. | Authenticated |
+| `GET /dashboard` | Return tenant- and role-scoped summary and recent work. | Authenticated |
+| `GET /customers` / `POST /customers` | Search/list and create customers. | Owner, manager, advisor |
+| `GET /customers/{id}` / `PATCH /customers/{id}` | Read/update a customer. | Owner, manager, advisor |
+| `GET /vehicles` / `POST /vehicles` | Search/list and create vehicles. | Owner, manager, advisor |
+| `GET /vehicles/{id}` / `PATCH /vehicles/{id}` | Read/update a vehicle. | Owner, manager, advisor |
+| `GET /jobs` / `POST /jobs` | Filter/list and create job cards. | Owner, manager, advisor; mechanic gets assigned jobs only |
+| `GET /jobs/{id}` / `PATCH /jobs/{id}` | Read/update permitted job fields. | By role and assignment |
+| `POST /jobs/{id}/transitions` | Apply a validated status transition. | By role and assignment |
+| `GET /jobs/{id}/history` | Read status and audit history for a job. | By role and assignment |
+| `GET /mechanics` | List active mechanics for assignment. | Owner, manager, advisor |
+| `GET /users` / `POST /users` / `PATCH /users/{id}` | List, invite/create, deactivate, or change roles. | Owner; manager may list only |
 
-`UNASSIGNED` is the pre-start state. A card in this state can have an assigned mechanic; `assigned_mechanic_id` distinguishes an assigned, not-yet-started card from one awaiting assignment.
+Do not expose unrestricted mass assignment. Accept only fields permitted for the endpoint and role. Filter fields, sort keys, and page sizes must be validated/allowlisted. Add endpoint-specific request/response schemas and tests.
 
-## 4. Response and Error Formats
+### 6.4 Error envelope
 
-### 4.1 Resource responses
-
-Single-resource responses contain the resource directly as JSON. Collection responses use a `data` array and a `meta.count` value. Successful single-resource reads and mutations return the resource's strong `ETag` response header in the format `"v<version>"`, for example `"v3"`. The `version` is also included in each resource body.
-
-`POST /job-cards` and `POST /mechanics` return `201 Created`, a `Location` header containing the created resource URL, and its `ETag`. Successful reads and mutations otherwise return `200 OK`.
-
-### 4.2 Error response
-
-All errors use this shape; `details` is omitted when there are no field-specific details.
+Every API error uses this shape and a status value matching the HTTP response:
 
 ```json
 {
   "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "One or more request fields are invalid.",
-    "details": {
-      "name": "Must contain between 1 and 100 characters."
-    }
+    "code": "MECHANIC_OCCUPIED",
+    "message": "This mechanic is assigned to another active job.",
+    "status": 409,
+    "timestamp": "2026-10-04T08:15:00Z",
+    "request_id": "req_01J...",
+    "details": []
   }
 }
 ```
 
-| HTTP status | Error code | Meaning |
-|---|---|---|
-| `400 Bad Request` | `VALIDATION_ERROR` | Invalid JSON, missing/invalid fields, or invalid query parameter. |
-| `401 Unauthorized` | `UNAUTHENTICATED` | Missing, expired, or invalid authentication credentials. |
-| `403 Forbidden` | `FORBIDDEN` | Caller is authenticated but not permitted to perform the operation. |
-| `404 Not Found` | `RESOURCE_NOT_FOUND` | Job card or mechanic ID does not exist. |
-| `409 Conflict` | `WORKFLOW_CONFLICT` | Operation conflicts with the current workflow state, mechanic availability, or uniqueness constraint. |
-| `412 Precondition Failed` | `VERSION_MISMATCH` | `If-Match` does not match the current resource ETag. |
-| `415 Unsupported Media Type` | `UNSUPPORTED_MEDIA_TYPE` | Request body is not `application/json`. |
-| `428 Precondition Required` | `IF_MATCH_REQUIRED` | A required `If-Match` header was not supplied. |
+`details` may contain safe field-level validation errors such as `{ "field": "registration", "code": "duplicate", "message": "This registration is already in use." }`. Omit `details` when not applicable. `request_id` must be safe to share with support and correlate to server logs. Error messages must not disclose foreign-tenant data or implementation internals. The UI presents useful messages and preserves unsaved form values after recoverable errors.
 
-## 5. ETag and Version Rules
+## 7. Concurrency and consistency
 
-1. A new mechanic and job card start at `version: 1`.
-2. `GET /mechanics/{id}` and `GET /job-cards/{id}` return the resource ETag. List responses include each resource's `version`; clients must fetch an individual resource to obtain its ETag before mutating it.
-3. Every mutation to an existing mechanic or job card requires `If-Match` with that resource's current ETag, including `PATCH /mechanics/{id}/status` and every job-card workflow action. Creation does not require `If-Match`.
-4. ETags are strong, quoted tags of the form `"v<version>"`. The header must identify the exact current version; wildcard and weak validators are not accepted.
-5. The server checks preconditions and applies the mutation atomically. A stale tag returns `412 VERSION_MISMATCH`, with no record changed. On success, the affected resource version increments by exactly one and the response includes the new `ETag` and version.
-6. When an operation updates both a job card and a mechanic, both records and both versions change atomically. The response's `ETag` identifies the job card. Fetch the mechanic resource for its current ETag and version.
+- Every persisted mutable record has an integer `version` starting at 1 and an HTTP `ETag` derived from that version.
+- Every update, archive, assignment change, and status transition requires `If-Match` with the current `ETag` (for example, `If-Match: "v2"`). Creation and read-only calls do not require it.
+- Missing required `If-Match` returns `428 PRECONDITION_REQUIRED`; stale version returns `412 PRECONDITION_FAILED` with the current version/ETag where safe. The client must refresh/reconcile and ask the user to retry; never silently overwrite concurrent changes.
+- Apply version check and mutation atomically in the database. Enforce unique job numbers, normalized registrations, and mechanic active-job occupancy with database constraints or transaction-safe locking as appropriate.
+- Multi-record changes (for example, creating a job and its line items/history) must be transactional. Failed transactions must leave no partial records.
 
-## 6. Mechanics Endpoints
+## 8. Frontend requirements
 
-### 6.1 List mechanics
+- Build a clear operational application shell with garage identity, primary navigation, current-user menu, and sign-out.
+- Required views: sign-in; dashboard; customer list/detail/create/edit; vehicle list/detail/create/edit; job list/detail/create/edit; role-appropriate mechanic work queue; and useful not-found/forbidden/error states.
+- Reuse shared layout, form controls, tables/lists, status badges, dialogs, and notification patterns. Keep domain logic out of giant page components; use focused components and API/service modules consistent with existing project conventions.
+- Every data view must implement loading, empty, success, and failure states. Forms must label inputs, validate on both client and server, identify field errors accessibly, prevent duplicate submissions, and warn before discarding meaningful unsaved changes.
+- Provide confirmation for irreversible or high-impact actions (cancel job, archive record, change role). Provide recoverable undo only if the backend can safely support it.
+- Search and filters must be reflected in page state and be shareable via the URL where practical. Paginate large datasets instead of downloading all records.
+- Treat API data as untrusted. Render user-supplied content as text; do not inject HTML.
+- UI must be usable at 360px viewport width and at common desktop widths, with no horizontal page overflow. Tables may become cards or use a deliberate contained scroll region on small screens.
+- Meet WCAG 2.2 AA fundamentals: semantic landmarks/headings, keyboard operation, visible focus, adequate contrast, associated labels, accessible names for icon controls, announced asynchronous errors/status changes, and reduced-motion support.
+- Use a consistent design system rather than starter-template styling. Do not add decorative animation or dependencies without a user-visible need.
 
-`GET /api/v1/mechanics`
+## 9. Performance and reliability
 
-Optional query parameters:
+- Keep list requests paginated and return only fields required for the view. Add server-side search/filter/sort rather than fetching all tenant data to filter in the browser.
+- Avoid N+1 database access in dashboard and list endpoints. Use appropriate indexes and bounded queries.
+- Set request/body size limits, timeouts, and a documented maximum page size. Handle database/network failure explicitly; do not return success-shaped empty data.
+- Avoid duplicate requests/submissions and cancel or ignore stale frontend requests when filters change.
+- Target: common list/dashboard requests complete within 500 ms at the 95th percentile under the MVP's expected small-garage load, excluding network latency; define and measure a representative local/staging dataset before claiming this target.
+- The application must build cleanly and display a clear recoverable error if the API is unavailable. Production data must persist across restarts and deployments.
 
-| Parameter | Description |
-|---|---|
-| `status` | Filter by `AVAILABLE`, `ACTIVE_JOB`, or `OFF_DUTY`. |
-| `search` | Case-insensitive substring match against `name` or `specialization`. |
+## 10. Security and privacy
 
-Returns `200 OK`. `meta.count` is the number of returned records.
+- Enforce TLS in deployment, least privilege for database/service credentials, secure secret injection, and separate development/test/production configuration.
+- Validate and authorize on the server; use parameterized database operations and allowlisted sort/filter fields.
+- Protect against XSS, CSRF where cookie auth is used, brute-force login, credential leakage, and insecure direct object references.
+- Apply secure cookie flags where cookies are used; configure CORS to explicit trusted origins, never wildcard credentialed origins.
+- Do not commit secrets or use production credentials in tests. Provide a safe `.env.example` containing placeholders only.
+- Logs must be structured, include request ID and useful operational context, redact credentials/tokens, and avoid unnecessary customer personal data. Never log passwords, authorization headers, or full tokens.
+- Define backup/restore expectations for the selected database before production deployment. Document data retention/deletion responsibilities; do not claim compliance certifications without verification.
 
-```json
-{
-  "data": [
-    {
-      "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-      "name": "Samuel Mwangi",
-      "specialization": "Auto Electrics & ECU Tuning",
-      "status": "AVAILABLE",
-      "active_job_card_id": null,
-      "version": 1,
-      "created_at": "2026-10-01T08:00:00Z",
-      "updated_at": "2026-10-01T08:00:00Z"
-    }
-  ],
-  "meta": {
-    "count": 1
-  }
-}
-```
+## 11. Configuration and operations
 
-### 6.2 Get a mechanic
+- Configure database URL, signing/session secrets, allowed frontend origins, environment, and logging level through environment variables or the deployment platform's secret manager.
+- Validate required configuration at startup and fail clearly if production configuration is incomplete. Never silently fall back to insecure production defaults.
+- Provide local development instructions for installing dependencies, starting frontend and backend, applying migrations, seeding non-sensitive demo data, running tests, linting, and building.
+- Demo/seed accounts and sample records are development/test only, explicitly documented, and must not be enabled with production defaults.
+- Provide health/readiness endpoints appropriate to the chosen backend. Readiness checks required dependencies without disclosing secrets or internal topology.
+- Document deployment, migration order, backup/restore, and a rollback strategy for schema/application releases.
 
-`GET /api/v1/mechanics/{id}`
+## 12. Testing and acceptance criteria
 
-Returns `200 OK`, the mechanic resource, and its `ETag`. A missing ID returns `404 RESOURCE_NOT_FOUND`.
+### 12.1 Required automated coverage
 
-### 6.3 Register a mechanic
+- Unit tests for domain validation, permitted status transitions, totals, normalization, role permissions, and pagination.
+- API/integration tests for authentication, tenant isolation, authorization, validation, uniqueness conflicts, transaction behavior, optimistic concurrency, and mechanic occupancy.
+- Frontend tests for critical forms and status actions, loading/empty/error states, and role-specific navigation/actions.
+- End-to-end smoke tests for sign-in, customer/vehicle creation, job creation and assignment, mechanic workflow, completion, and sign-out.
+- Tests must use isolated test data and must not call production services.
 
-`POST /api/v1/mechanics`
+### 12.2 MVP acceptance checklist
 
-Request:
+The MVP is acceptable only when all of the following are true:
 
-```json
-{
-  "name": "David Ochieng",
-  "specialization": "Brake Systems & Suspension"
-}
-```
+1. A user can authenticate and receives only the correct garage context and role permissions.
+2. A manager/advisor can create and find a customer and vehicle; duplicate normalized registrations are rejected with an actionable conflict.
+3. A manager/advisor can create a job with line items; the server assigns a unique job number and calculates authoritative totals.
+4. A permitted user can assign a mechanic and move a job through only allowed transitions; invalid transitions are rejected.
+5. A mechanic cannot access unassigned jobs or perform manager-only actions, and cannot start a second active job.
+6. Two garages cannot read or mutate each other's records, including by guessing IDs, searching, filtering, or using relationships.
+7. Concurrent stale updates fail with `412` and do not erase the first successful update.
+8. Refreshing the browser or restarting the application does not lose persisted records.
+9. Dashboard and lists show persisted, garage-scoped data and provide accessible loading, empty, and error states.
+10. The application passes its production build, configured linter, and relevant automated tests with no new errors.
 
-Both fields are required strings; whitespace is trimmed before validating lengths. The new mechanic has `status: "AVAILABLE"`, `active_job_card_id: null`, and `version: 1`. Returns `201 Created`, the mechanic resource, `Location: /api/v1/mechanics/{id}`, and `ETag: "v1"`.
+## 13. Implementation guidance for coding agents
 
-### 6.4 Update mechanic duty status
+1. Inspect the repository and identify existing conventions, uncommitted changes, available tooling, and any backend or design work added since this spec was written. Preserve unrelated user work.
+2. Turn the requirements into small vertical slices: persistence/auth/tenant boundary; customer and vehicle management; job lifecycle; dashboard and UI refinement. Keep each slice runnable and test it before moving on.
+3. Reuse existing dependencies and patterns. Add a dependency only when it is needed, justified, and compatible with the current stack. Do not introduce a distributed architecture for this MVP.
+4. Implement authorization, validation, transactions, tenant scoping, and concurrency in the backend first; then connect the UI to the real API. Temporary mocks must be isolated behind an adapter and must never masquerade as production persistence.
+5. Add or update tests with each behavior change. Run the smallest relevant tests/linter/build after changes, then the full required checks before declaring completion.
+6. Update setup/API/deployment documentation when implementation decisions affect how another engineer runs or operates the system.
+7. When a requirement cannot be met due to a missing product decision or external service, document the blocker and a safe default; do not silently invent billing, legal, tax, or regional behavior.
 
-`PATCH /api/v1/mechanics/{id}/status`
+### Decisions intentionally left to implementation discovery
 
-Requires `If-Match` with the current mechanic ETag.
-
-Request:
-
-```json
-{
-  "status": "OFF_DUTY"
-}
-```
-
-Only `AVAILABLE` and `OFF_DUTY` are accepted. `ACTIVE_JOB` can only be set by the job-card workflow. A mechanic with an active job card cannot be set to `OFF_DUTY` (`409 WORKFLOW_CONFLICT`). On success, returns `200 OK`, the updated mechanic resource, and the new mechanic ETag.
-
-## 7. Job Card Endpoints and Workflow
-
-### 7.1 List job cards
-
-`GET /api/v1/job-cards`
-
-Optional query parameter `status` accepts `UNASSIGNED`, `IN_PROGRESS`, `COMPLETED`, or `CANCELLED`. Results are sorted by `created_at` descending. Returns `200 OK`.
-
-```json
-{
-  "data": [
-    {
-      "id": "JC-2026-091",
-      "vehicle_reg": "KDA 123X",
-      "model": "Toyota Hilux 2018",
-      "reported_fault": "Brake pad replacement & disc skimming",
-      "status": "UNASSIGNED",
-      "assigned_mechanic_id": null,
-      "version": 1,
-      "created_at": "2026-10-04T07:30:00Z",
-      "updated_at": "2026-10-04T07:30:00Z"
-    }
-  ],
-  "meta": {
-    "count": 1
-  }
-}
-```
-
-### 7.2 Create a job card
-
-`POST /api/v1/job-cards`
-
-Creates a job card during vehicle intake.
-
-Request:
-
-```json
-{
-  "vehicle_reg": "KDA 123X",
-  "model": "Toyota Hilux 2018",
-  "reported_fault": "Brake pad replacement & disc skimming"
-}
-```
-
-All fields are required non-empty strings after trimming. The server generates `id`; the new card has `status: "UNASSIGNED"`, `assigned_mechanic_id: null`, and `version: 1`. Returns `201 Created`, the job-card resource, `Location: /api/v1/job-cards/{id}`, and `ETag: "v1"`.
-
-### 7.3 Get a job card
-
-`GET /api/v1/job-cards/{id}`
-
-Returns `200 OK`, the job-card resource, and its `ETag`. A missing ID returns `404 RESOURCE_NOT_FOUND`.
-
-### 7.4 Assign a mechanic
-
-`POST /api/v1/job-cards/{id}/assign`
-
-Requires the current job-card ETag in `If-Match`.
-
-Request:
-
-```json
-{
-  "mechanic_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
-}
-```
-
-The card must be `UNASSIGNED` and have no assigned mechanic. The mechanic must exist, be `AVAILABLE`, and have no active job card. Assignment atomically sets the card's `assigned_mechanic_id`, sets the mechanic's status to `ACTIVE_JOB` and `active_job_card_id` to this card, and increments both versions. The card remains `UNASSIGNED` until started. Returns `200 OK`, the updated job-card resource, and its new ETag. Invalid state or unavailable mechanic returns `409 WORKFLOW_CONFLICT`.
-
-### 7.5 Start work
-
-`POST /api/v1/job-cards/{id}/start`
-
-Requires the current job-card ETag in `If-Match`. The card must be `UNASSIGNED` and assigned to a mechanic that is `ACTIVE_JOB` for this card. Sets the card status to `IN_PROGRESS`, increments its version, and returns `200 OK`, the updated job-card resource, and its new ETag. A card that is unassigned or in any other status returns `409 WORKFLOW_CONFLICT`.
-
-### 7.6 Complete work
-
-`POST /api/v1/job-cards/{id}/complete`
-
-Requires the current job-card ETag in `If-Match`. The card must be `IN_PROGRESS`. Atomically sets the card status to `COMPLETED`, clears `assigned_mechanic_id`, sets its assigned mechanic to `AVAILABLE` with `active_job_card_id: null`, and increments the card and mechanic versions. Returns `200 OK`, the updated job-card resource, and its new ETag. A card not in progress returns `409 WORKFLOW_CONFLICT`.
-
-### 7.7 Cancel a job card
-
-`POST /api/v1/job-cards/{id}/cancel`
-
-Requires the current job-card ETag in `If-Match`. A card in `UNASSIGNED` or `IN_PROGRESS` may be cancelled. Atomically sets its status to `CANCELLED`; if a mechanic is assigned, clears `assigned_mechanic_id` and sets that mechanic to `AVAILABLE` with `active_job_card_id: null`. Increments the card version and, when applicable, the mechanic version. Returns `200 OK`, the updated job-card resource, and its new ETag. A `COMPLETED` or already `CANCELLED` card returns `409 WORKFLOW_CONFLICT`.
-
-### 7.8 Allowed state transitions
-
-| Operation | Required current card state | Resulting card state |
-|---|---|---|
-| Create | — | `UNASSIGNED` |
-| Assign | `UNASSIGNED`, no mechanic assigned | `UNASSIGNED`, mechanic assigned |
-| Start | `UNASSIGNED`, mechanic assigned | `IN_PROGRESS` |
-| Complete | `IN_PROGRESS` | `COMPLETED`, mechanic released |
-| Cancel | `UNASSIGNED` or `IN_PROGRESS` | `CANCELLED`, mechanic released if assigned |
-
-`COMPLETED` and `CANCELLED` are terminal states. Reassignment, restart, completion of a non-started card, and cancellation of a terminal card are not supported.
+The repository does not currently establish a backend language/framework, database vendor, deployment platform, email provider, garage currency, or time zone. Select the simplest suitable options after inspecting the repo and deployment context. Keep the API and domain behavior defined here stable, document the choices, and do not treat a vendor-specific choice as a product requirement.
