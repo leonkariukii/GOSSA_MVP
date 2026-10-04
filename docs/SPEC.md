@@ -53,8 +53,13 @@ Every owner, mechanic, job, history record, and audit record has a server-assign
 - There is exactly one `owner` user associated with the one garage. Only the owner can authenticate and use the application.
 - Do not implement roles, mechanic credentials, staff accounts, public registration, or garage selection.
 - Create the initial garage and owner using the idempotent command `npm --prefix server run bootstrap:owner`. It reads the garage name, time zone, owner name/email, and password from interactive secure input or documented environment variables, hashes the password, refuses to overwrite an existing owner, and never prints the password. Do not seed a default production password.
-- Use server-managed sessions in secure, HttpOnly, SameSite cookies. A refresh-token flow does not exist in v1; do not issue refresh tokens or add refresh endpoints. Rotate the session ID on login, expire and revoke sessions on logout, and apply CSRF protection to state-changing cookie-authenticated requests.
-- Return a session-bound CSRF token in login and current-session responses. Require it in the `X-CSRF-Token` header for every state-changing authenticated request, including logout. A missing/invalid CSRF token returns `403 CSRF_FAILED`; this response does not reveal whether a tenant resource exists.
+- Use server-managed sessions in the application-owned PostgreSQL sessions table; do not use `express-session`. Store a cryptographically random session ID hash, owner ID, the session's cryptographically random CSRF token itself (not only its hash), creation time, last activity time, idle expiry, absolute expiry, and revocation time. Generate a new session ID and CSRF token after successful login; never accept a session ID supplied in a URL or request body.
+- The sessions table stores at least `id` (opaque row ID), `session_id_hash` (unique), `owner_user_id`, `csrf_token` (random secret), `created_at`, `last_activity_at`, `idle_expires_at`, `absolute_expires_at`, and nullable `revoked_at`. Index the session ID hash and expiry/revocation fields needed for lookup and cleanup. Never log session or CSRF token values.
+- Set the session cookie as `HttpOnly; SameSite=Lax`; set `Secure` in production. Use a host-only cookie (no `Domain`) and `Path=/`. Enforce an 8-hour sliding idle lifetime and a 7-day absolute lifetime; activity may extend idle expiry but never beyond absolute expiry. Expired/revoked sessions are invalid, and logout revokes the current row and clears the cookie.
+- Return the session-bound CSRF token in login and current-session responses. Require it in the `X-CSRF-Token` header for every state-changing authenticated request, including logout, and compare it in constant time. A missing/invalid token returns `403 CSRF_FAILED`; this response does not reveal whether a tenant resource exists.
+- Use a same-origin deployment. In development, Vite proxies `/api` to Express. In production, Express serves the built frontend and API from the same origin. Do not enable cross-origin requests by default; the CORS allowlist is empty unless a separately approved deployment requires specific origins.
+- The development API listens on port `3000` by default; Vite proxies `/api` to `http://localhost:3000`. In production, Express serves the repository-root frontend build output (`dist/`) after API routes are registered.
+- A refresh-token flow does not exist in v1; do not issue refresh tokens or add refresh endpoints.
 - Login failures must use a generic response that does not reveal whether an account exists. Rate-limit login attempts and use a maintained password-hashing library (Argon2id preferred).
 - All application API routes require the authenticated owner session. Unauthenticated requests return `401 UNAUTHENTICATED`.
 
@@ -64,15 +69,15 @@ Mechanics are roster records, not system users; they have no password, session, 
 
 Owner user fields: `id`, `garage_id` (unique; only one owner per garage), `name` (required, 1-120 characters), `email` (required, valid, maximum 254 characters, normalized to lowercase and unique), `password_hash`, `created_at`, `updated_at`, and `version`. The login request password must contain 12-128 characters; never truncate passwords.
 
-Mechanic fields: `id`, `garage_id`, `name`, optional `phone`, optional `skills`, `duty_status`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
+Mechanic fields: `id`, `garage_id`, `name`, optional `phone`, optional `skills`, stored `duty_status`, `created_at`, `updated_at`, `version`, and optional `archived_at`.
 
 The three `duty_status` values are:
 
 - `available`: can be assigned work.
-- `busy`: currently assigned to a job in `in_progress`; derived from the active job and not directly set by a user.
+- `busy`: currently assigned to a job in `in_progress`; maintained by the server as a stored value, never directly set by an API client.
 - `off_duty`: owner-designated unavailable mechanic; cannot be assigned new work.
 
-The API computes `busy` from active jobs. When no longer assigned to an in-progress job, a mechanic returns to `available` unless the owner has set the record `off_duty`. A transition to `in_progress` requires an assigned, available mechanic. Only `available` mechanics may be assigned or start work. An `off_duty` mechanic cannot be set off duty while assigned to an in-progress job. Mechanic roster changes never create or modify user accounts. A mechanic's version increments when its derived duty status changes.
+Update `duty_status` in the same database transaction as every job assignment, transition, or archival change that affects it. A mechanic assigned to at least one `in_progress` job is `busy`; otherwise the mechanic is `available` or owner-designated `off_duty`. Transactions must preserve the invariant that a mechanic cannot have more than one `in_progress` job. A mechanic cannot be set off duty while working a job. Mechanic roster changes never create or modify user accounts. Increment the mechanic's version whenever its stored duty status changes.
 
 ## 4. Jobs and lifecycle
 
@@ -86,7 +91,7 @@ Job fields:
 |---|---|
 | `id` | Opaque immutable ID, primary key. |
 | `garage_id` | Server-assigned tenant ID. |
-| `job_number` | Server-generated, unique within garage, format `JC-YYYY-NNN` with a sequence that can grow beyond three digits. |
+| `job_number` | Server-generated, unique within garage, format `JC-YYYY-NNN` with a sequence that can grow beyond three digits. `YYYY` is the current year in the garage's configured time zone; the sequence is per garage per year. |
 | `status` | One of `open`, `in_progress`, `waiting`, `completed`, `cancelled`. |
 | `customer_name` | Required trimmed string, 1-160 characters. |
 | `customer_phone` | Optional trimmed string, maximum 32 characters. |
@@ -117,17 +122,25 @@ There are no money, estimate, invoice, parts, approval, or line-item fields in v
 | `completed` | None (terminal). |
 | `cancelled` | None (terminal). |
 
-Only the server applies transitions. Every successful transition appends a history record with `id`, `garage_id`, `job_id`, `actor_user_id`, `from_status`, `to_status`, optional `note`, and `created_at`. History is append-only. A transition to `in_progress` requires an assigned available mechanic.
+Only the server applies transitions. Every successful transition appends a history record with `id`, `garage_id`, `job_id`, `actor_user_id`, `from_status`, `to_status`, optional `note`, and `created_at`. History is append-only and retained indefinitely in v1; do not delete history when a job or mechanic is archived. Archived jobs remain available by ID, including their history. A transition to `in_progress` requires an assigned mechanic whose stored duty status is `available`.
 
-An `available` mechanic may have at most one job in `in_progress` at a time. Assignment and status changes that affect this constraint must be enforced atomically. Assigning a mechanic does not itself start a job. When transitioning a job to `in_progress`, reject assignment to an off-duty mechanic or a mechanic already working on another job. Reassigning an in-progress job must check both mechanics and update atomically.
+#### Assignment rules
+
+- Assignment and unassignment are allowed only for non-archived jobs in `open`, `waiting`, or `in_progress`. Terminal (`completed`, `cancelled`) or archived jobs cannot be assigned or unassigned.
+- A mechanic may be assigned to `open` or `waiting` jobs while `busy`, allowing work to be queued. Assignment is rejected if the mechanic is `off_duty` or archived. Assignment alone does not change duty status.
+- A job entering or resuming `in_progress` must have an assigned, non-archived mechanic with stored status `available`. If the mechanic is already `busy`, return `409 MECHANIC_OCCUPIED`.
+- Assignment on a job that is already `in_progress` is allowed only if the new mechanic is not already busy with another in-progress job; since the mutation immediately affects an active job, reject a busy mechanic with `409 MECHANIC_OCCUPIED`. Unassigning an `in_progress` job is rejected with `409 ACTIVE_JOB_CANNOT_BE_UNASSIGNED`.
+- An unknown, archived, or foreign-garage `mechanic_id` is a validation failure: return `422 VALIDATION_ERROR` with a safe field detail for `mechanic_id`. Do not reveal whether a foreign-garage mechanic exists.
+- In one transaction, every job change that affects occupancy updates the job, history where applicable, and all affected mechanics' stored `duty_status` and `version`. Keep `assigned_mechanic_id` on completed and cancelled jobs as historical assignment data.
 
 ## 5. Validation and data rules
 
-- Trim text input and reject empty required values, invalid types, unknown fields, oversized request bodies, and invalid enum values. Never silently truncate.
+- Trim text input and reject empty required values, invalid types, unknown fields, oversized request bodies, and invalid enum values. Never silently truncate. Unknown body fields return `422 VALIDATION_ERROR`; malformed JSON/query syntax remains `400 BAD_REQUEST`.
 - For `PATCH`, omitted fields remain unchanged; nullable optional fields explicitly set to `null` are cleared; required fields cannot be set to `null`.
 - Request and response JSON uses `snake_case`.
 - Validate phone numbers permissively for international formats; do not assume a country. Validate `time_zone` against IANA time-zone data.
-- Normalize vehicle registration for searching and duplicate detection by trimming, uppercasing, and removing internal whitespace and separator punctuation. Preserve the submitted display form. Within the garage, reject a new non-archived job if another non-archived job has the same normalized registration and is not `completed` or `cancelled`; return `409 DUPLICATE_ACTIVE_VEHICLE_JOB`. Historical completed/cancelled jobs may share a registration.
+- Normalize vehicle registration for searching and duplicate detection by trimming, uppercasing, and removing internal whitespace and separator punctuation. Preserve the submitted display form. Within the garage, reject a job create or registration edit if another non-archived job has the same normalized registration and is not `completed` or `cancelled`; return `409 DUPLICATE_ACTIVE_VEHICLE_JOB`. Enforce this with a PostgreSQL partial unique index on `(garage_id, normalized_vehicle_registration)` for non-archived jobs whose status is not `completed` or `cancelled`. Historical completed/cancelled jobs may share a registration.
+- Archived jobs and mechanics are excluded from list responses by default. `include_archived=true` includes them in lists. Direct `GET` by ID returns an archived record to the authorized owner; archiving does not make the record inaccessible or remove its history.
 - Store timestamps in UTC and return ISO 8601 strings. Render them in the garage's configured time zone.
 - IDs and `garage_id` are immutable. Use database foreign keys, tenant-aware uniqueness constraints, and indexes for tenant ID, job status/update time, job number, normalized registration, mechanic assignment/status, and foreign keys.
 - Apply optimistic concurrency to updates, assignment changes, transitions, and archival. Every successful mutation increments the affected record's `version`.
@@ -142,7 +155,7 @@ An `available` mechanic may have at most one job in `in_progress` at a time. Ass
 - JSON request and response bodies use UTF-8 and `Content-Type: application/json`.
 - `GET` reads, `POST` creates or performs an explicit action, `PATCH` partially updates, and `DELETE` is not used for operational records; use archive actions/fields.
 - Creation returns `201 Created` with a `Location` header. Successful updates/actions return `200 OK` with the updated resource unless noted. Logout returns `204 No Content`.
-- All mutable resources expose `version` and an `ETag`, for example response header `ETag: "v2"`. Every `PATCH`, assignment, transition, or archive request must include `If-Match: "v2"`. Missing precondition returns `428`; stale version returns `412`. Check and update atomically.
+- All mutable resources expose `version` and an `ETag`, for example response header `ETag: "v2"`. Clients build `If-Match` from `version` as `"v" + version` (for example, `version: 2` becomes `If-Match: "v2"`); no additional fetch is needed before a mutation. Every `PATCH`, assignment, transition, or archive request must include `If-Match`. Missing precondition returns `428`; stale version returns `412`. Check and update atomically.
 - Do not mass-assign input. Accept only fields defined for each operation. Query sort keys and filters are allowlisted.
 - All list endpoints use these common query parameters:
   - `page`: positive integer, default `1`.
@@ -160,7 +173,7 @@ An `available` mechanic may have at most one job in `in_progress` at a time. Ass
 }
 ```
 
-- Status codes: `400` malformed JSON/query, `401` unauthenticated, `404` missing or foreign-tenant resource, `409` business/uniqueness conflict, `412` stale version, `422` field/domain validation, `428` missing `If-Match`, `429` rate limit, and `500` unexpected server error.
+- Status codes: `400` malformed JSON/query, `401` unauthenticated, `403` CSRF failure, `404` missing or foreign-tenant resource, `409` business/uniqueness conflict, `412` stale version, `422` field/domain validation, `428` missing `If-Match`, `429` rate limit, and `500` unexpected server error.
 - Return `404 NOT_FOUND` for both nonexistent and foreign-tenant resources. Do not reveal whether a foreign resource exists.
 
 ### 6.2 Authentication and garage endpoints
@@ -179,9 +192,9 @@ An `available` mechanic may have at most one job in `in_progress` at a time. Ass
 
 | Method and path | Query/body | Success |
 |---|---|---|
-| `GET /dashboard` | Optional `date_from`, `date_to` as `YYYY-MM-DD`; range maximum 366 days. | `200` `{ "data": { "open_count": 0, "in_progress_count": 0, "waiting_count": 0, "completed_today_count": 0, "recent_jobs": [] } }`. `recent_jobs` contains at most 10 job summaries ordered by `updated_at desc`. |
+| `GET /dashboard` | No query parameters. | `200` `{ "data": { "open_count": 0, "in_progress_count": 0, "waiting_count": 0, "completed_today_count": 0, "recent_jobs": [] } }`. Counts and recent jobs exclude archived jobs. `completed_today_count` counts transition-history events to `completed` during the garage's local calendar day. `recent_jobs` contains at most 10 job summaries ordered by `updated_at desc`. |
 
-Job summary shape: `{ "id": "...", "job_number": "...", "status": "open", "customer_name": "...", "vehicle_registration": "...", "assigned_mechanic": { "id": "...", "name": "..." } | null, "updated_at": "..." }`.
+Job summary shape: `{ "id": "...", "job_number": "...", "status": "open", "customer_name": "...", "vehicle_registration": "...", "assigned_mechanic": { "id": "...", "name": "..." } | null, "updated_at": "..." }`. “Today” means midnight-to-midnight in the garage's configured IANA time zone, converted to UTC bounds for database queries.
 
 ### 6.4 Mechanic endpoints
 
@@ -192,8 +205,8 @@ Job summary shape: `{ "id": "...", "job_number": "...", "status": "open", "custo
 | `GET /mechanics/{id}` | No body. | `200` mechanic. |
 | `PATCH /mechanics/{id}` | `{ "name": "Alex M.", "phone": "+254700000000", "skills": "Diagnostics" }`; name 1-120 chars; phone max 32 chars; skills max 500 chars; at least one field required. No direct `duty_status` or `garage_id` input. | `200` mechanic. Requires `If-Match`. |
 | `POST /mechanics/{id}/off-duty` | No body. | `200` updated mechanic with `duty_status: "off_duty"`. Requires `If-Match`; rejected with `409 MECHANIC_HAS_ACTIVE_JOB` if currently working. |
-| `POST /mechanics/{id}/available` | No body. | `200` updated mechanic with `duty_status: "available"`. Requires `If-Match`; rejected with `409 MECHANIC_HAS_ACTIVE_JOB` if an active job is in progress. |
-| `POST /mechanics/{id}/archive` | No body. | `200` archived mechanic. Requires `If-Match`; rejected if assigned to an `in_progress` job. |
+| `POST /mechanics/{id}/available` | No body. | `200` updated mechanic with `duty_status: "available"`. Requires `If-Match`; only changes `off_duty` to `available`. A `busy` mechanic cannot be manually set to available and returns `409 MECHANIC_HAS_ACTIVE_JOB`. |
+| `POST /mechanics/{id}/archive` | No body. | `200` archived mechanic. Requires `If-Match`; rejected with `409 MECHANIC_HAS_NONTERMINAL_JOBS` if assigned to any non-terminal job (`open`, `in_progress`, or `waiting`). |
 
 Mechanic response shape: `{ "data": { "id": "...", "garage_id": "...", "name": "...", "phone": null, "skills": null, "duty_status": "available", "created_at": "...", "updated_at": "...", "version": 1, "archived_at": null } }`.
 
@@ -204,10 +217,10 @@ Mechanic response shape: `{ "data": { "id": "...", "garage_id": "...", "name": "
 | `GET /jobs` | Common pagination; optional `q` (1-120 chars, searches job number, customer name, and normalized registration), `status` (one exact lifecycle value), `mechanic_id`, `include_archived` (`true`/`false`, default `false`), `created_from`, `created_to` (`YYYY-MM-DD`, interpreted in garage time zone); `sort_by`: `job_number`, `status`, `created_at`, `updated_at`. Date range must be valid, `created_from` must not be later than `created_to`, and the range must be no longer than 366 days. | `200` paginated jobs. |
 | `POST /jobs` | `{ "customer_name": "Sam Example", "customer_phone": "+254700000000", "vehicle_registration": "KDA 123A", "vehicle_make": "Toyota", "vehicle_model": "Corolla", "vehicle_year": 2020, "odometer_km": 85000, "work_requested": "Inspect front brakes", "internal_notes": "Call before extra work" }`. Required: `customer_name`, `vehicle_registration`, `work_requested`. Other fields optional and nullable. No client may supply `garage_id`, `job_number`, `status`, `version`, timestamps, or `created_by_user_id`. | `201` job created with `status: "open"` and unassigned mechanic. |
 | `GET /jobs/{id}` | No body. | `200` job. |
-| `PATCH /jobs/{id}` | `{ "customer_name": "...", "customer_phone": "...", "vehicle_registration": "...", "vehicle_make": "...", "vehicle_model": "...", "vehicle_year": 2020, "odometer_km": 85000, "work_requested": "...", "diagnosis": "...", "work_performed": "...", "internal_notes": "..." }`; any subset of editable fields, at least one required. Cannot update status, assignment, tenant, number, version, or timestamps here. | `200` updated job. Requires `If-Match`. |
-| `POST /jobs/{id}/assignment` | `{ "mechanic_id": "opaque-id" }` to assign, or `{ "mechanic_id": null }` to unassign. | `200` updated job. Requires `If-Match`; mechanic must be active, available, and in the same garage. |
+| `PATCH /jobs/{id}` | `{ "customer_name": "...", "customer_phone": "...", "vehicle_registration": "...", "vehicle_make": "...", "vehicle_model": "...", "vehicle_year": 2020, "odometer_km": 85000, "work_requested": "...", "diagnosis": "...", "work_performed": "...", "internal_notes": "..." }`; any subset of editable fields, at least one required. Cannot update status, assignment, tenant, number, version, or timestamps here. Registration edits enforce the same active-job duplicate check as creation. | `200` updated job. Requires `If-Match`. |
+| `POST /jobs/{id}/assignment` | `{ "mechanic_id": "opaque-id" }` to assign, or `{ "mechanic_id": null }` to unassign. | `200` updated job. Requires `If-Match`; follows all assignment rules in §4.2. Unknown, archived, or foreign-garage mechanic IDs return `422 VALIDATION_ERROR` with a `mechanic_id` field detail. |
 | `POST /jobs/{id}/transitions` | `{ "to_status": "in_progress", "note": "Started inspection" }`; `to_status` required; `note` optional, maximum 500 characters. | `200` updated job. Requires `If-Match`. |
-| `GET /jobs/{id}/history` | Common pagination; `sort_by` only `created_at`; `order` must be `desc` (newest first). | `200` paginated immutable history events. |
+| `GET /jobs/{id}/history` | Common pagination; `sort_by` only `created_at`; `order` must be `desc` (newest first). Available for archived jobs too. | `200` paginated immutable history events. |
 | `POST /jobs/{id}/archive` | No body. | `200` archived job. Requires `If-Match`; terminal jobs only. |
 
 Job response shape:
@@ -266,11 +279,13 @@ All errors use this JSON envelope; `status` equals the HTTP status:
 | 400 | `BAD_REQUEST` | Malformed JSON, invalid query encoding, or malformed request syntax. |
 | 401 | `UNAUTHENTICATED` | Missing, expired, or invalid session; login credentials are invalid. |
 | 403 | `CSRF_FAILED` | Missing or invalid session-bound CSRF token. |
-| 404 | `NOT_FOUND` | Resource is nonexistent, archived where hidden, or belongs to another tenant. |
+| 404 | `NOT_FOUND` | Resource is nonexistent or belongs to another tenant. |
 | 409 | `CONFLICT` | Generic uniqueness or business-rule conflict. |
 | 409 | `MECHANIC_OCCUPIED` | Mechanic already has another in-progress job. |
-| 409 | `MECHANIC_UNAVAILABLE` | Mechanic is off duty, archived, or otherwise unavailable for assignment/start. |
-| 409 | `MECHANIC_HAS_ACTIVE_JOB` | Attempt to set off-duty/archive a mechanic with an in-progress job. |
+| 409 | `MECHANIC_UNAVAILABLE` | Mechanic is off duty and cannot be assigned or started. |
+| 409 | `MECHANIC_HAS_ACTIVE_JOB` | Attempt to set a mechanic off duty or available while it has an in-progress job. |
+| 409 | `MECHANIC_HAS_NONTERMINAL_JOBS` | Mechanic cannot be archived while assigned to open, in-progress, or waiting jobs. |
+| 409 | `ACTIVE_JOB_CANNOT_BE_UNASSIGNED` | An in-progress job cannot be left without an assigned mechanic. |
 | 409 | `DUPLICATE_ACTIVE_VEHICLE_JOB` | Another active job has the same normalized registration. |
 | 409 | `INVALID_STATUS_TRANSITION` | Requested status transition is not allowed. |
 | 412 | `PRECONDITION_FAILED` | `If-Match` version is stale. |
@@ -285,7 +300,8 @@ All errors use this JSON envelope; `status` equals the HTTP status:
 - Every `PATCH`, assignment, transition, or archive mutation requires `If-Match`. Missing header returns `428 PRECONDITION_REQUIRED`; stale version returns `412 PRECONDITION_FAILED` and may include the current version/ETag.
 - Check the version and apply the mutation atomically. Never silently overwrite a concurrent update. The frontend refreshes and lets the owner reconcile a `412`.
 - Job-number allocation, mechanic occupancy, status transitions, and history insertion must be transaction-safe. If a mutation fails, no partial history/job changes remain.
-- Reassignment of an in-progress job must atomically release the old mechanic, validate the new mechanic, and assign the new mechanic. Changes in derived mechanic duty status also increment that mechanic's version.
+- Lock affected mechanic rows in a consistent order (or use an equivalent transaction-safe strategy) when changing assignments or job status. Enforce one in-progress job per mechanic with a PostgreSQL partial unique index on `(garage_id, assigned_mechanic_id)` where `status = 'in_progress'`, `assigned_mechanic_id IS NOT NULL`, and `archived_at IS NULL`.
+- Reassignment of an in-progress job must atomically release the old mechanic, validate the new mechanic, and assign the new mechanic. Update stored mechanic duty status and increment the mechanic's version in that same transaction.
 
 ## 8. Frontend requirements
 
@@ -301,7 +317,8 @@ All errors use this JSON envelope; `status` equals the HTTP status:
 
 - Enforce server-side input validation, authorization, tenant scoping, and allowlisted query fields. Use parameterized SQL.
 - Use HTTPS in deployment, least-privilege database credentials, secret injection, and separate development/test/production configuration. Provide a placeholder-only `.env.example`; never commit secrets.
-- Protect cookie-authenticated state-changing requests against CSRF; configure explicit trusted CORS origins. Do not use wildcard credentialed origins.
+- Use the same-origin deployment described in §3.2: Vite proxies `/api` in development and Express serves the built frontend in production. CORS is disabled by default (empty allowlist); only configure explicit origins if a separately approved deployment requires them. Never use wildcard credentialed origins.
+- Store the random session-bound CSRF token in the session row as specified in §3.2. Enforce `SameSite=Lax`, `HttpOnly`, production `Secure`, host-only `Path=/` cookies, and the 8-hour idle/7-day absolute session lifetimes.
 - Apply request body limits, timeouts, rate limiting for login, and structured logs with request IDs. Redact passwords, cookies, session identifiers, and personal data not needed for operations.
 - Paginate list endpoints and select only required fields. Avoid N+1 database queries; index frequent tenant-scoped lookups. Do not return success-shaped empty results when dependencies fail.
 - Validate required production configuration at startup. Do not silently use development defaults in production.
@@ -339,6 +356,6 @@ Do not claim these hardening targets have been met without measurement or eviden
 1. Inspect the current repository, worktree, and available scripts before editing; preserve unrelated changes and the existing root frontend.
 2. Build vertical slices: PostgreSQL schema/migrations and owner bootstrap; session/auth and tenant boundary; mechanic roster; job lifecycle/API; frontend screens and integration.
 3. Implement server-side validation, authorization, transactions, tenant scoping, and concurrency before relying on frontend checks.
-4. Add focused tests with each slice, and run the smallest relevant checks before the full MVP verification set.
+4. Add focused tests with each slice, and run the smallest relevant checks before the full MVP verification set. Tenant-isolation tests must create a second garage and its fixture records directly in the disposable test database; do not add an API endpoint for garage provisioning.
 5. Update this specification when a product/API contract changes; update setup documentation when stack or operations change.
 6. If an external decision is truly required, ask instead of inventing billing, legal, regional, or out-of-scope behavior.

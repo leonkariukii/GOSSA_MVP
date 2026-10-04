@@ -8,6 +8,7 @@
 
 ## Pinned v1 stack and layout
 
+- Runtime: Node.js 24 LTS for both frontend tooling and the Express server; declare this in `engines` in both package manifests.
 - Frontend: React JSX with Vite, kept in the existing root `src/` directory.
 - Client-side server-state fetching/caching: TanStack Query.
 - Backend: Node.js with Express, located in a new root-level `server/` directory.
@@ -16,7 +17,7 @@
 - SQL migrations: `node-pg-migrate`.
 - Password hashing: `argon2`.
 - Request and environment validation: `zod`.
-- Authentication sessions: a project-owned PostgreSQL sessions table storing session ID/hash, owner ID, CSRF token/hash, expiry, and revocation state. Do not use `express-session`; persist and revoke sessions through the application’s own data-access layer.
+- Authentication sessions: a project-owned PostgreSQL sessions table storing the session ID hash, owner ID, CSRF token itself, creation/last-activity times, idle and absolute expiries, and revocation time. Do not use `express-session`; persist and revoke sessions through the application’s own data-access layer, following cookie and CSRF rules in `docs/SPEC.md`.
 - Server tests: Vitest and Supertest.
 - Client tests: Vitest and React Testing Library.
 - Keep API calls behind a focused frontend service/client layer. Keep server routes, validation, domain logic, and persistence separated enough to test without building unnecessary abstraction or services.
@@ -43,7 +44,6 @@ The frontend uses the repository-root `package.json`. The backend has its own `s
 | Start frontend | `npm run dev` |
 | Start API | `npm --prefix server run dev` |
 | Build frontend | `npm run build` |
-| Build API | `npm --prefix server run build` |
 | Lint frontend | `npm run lint` |
 | Lint API | `npm --prefix server run lint` |
 | Test frontend | `npm test` |
@@ -51,7 +51,9 @@ The frontend uses the repository-root `package.json`. The backend has its own `s
 | Apply database migrations | `npm --prefix server run migrate:up` |
 | Bootstrap the initial garage and owner | `npm --prefix server run bootstrap:owner` |
 
-These commands define the required scripts as the server is implemented. Keep the root frontend scripts and server scripts separately runnable.
+Set `TEST_DATABASE_URL` to a dedicated disposable PostgreSQL database before running tests. Test setup must create a second garage directly in that test database to verify tenant isolation; do not add an API endpoint to create another garage. These commands define the required scripts as the server is implemented. Keep the root frontend scripts and server scripts separately runnable. The Express server is plain JavaScript and has no separate build step.
+
+Later operational follow-up, not required for the initial auth slice: add `npm --prefix server run reset:owner-password` with secure interactive input and session revocation.
 
 ## v1 scope guard
 
