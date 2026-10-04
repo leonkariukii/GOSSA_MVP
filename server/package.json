@@ -1,0 +1,29 @@
+{
+  "name": "gossa-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "bootstrap:owner": "node src/bootstrap-owner.js",
+    "migrate:up": "node src/migrate.js up",
+    "lint": "eslint .",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.0",
+    "express": "^5.1.0",
+    "pg": "^8.17.0",
+    "uuid": "^11.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.17.0",
+    "supertest": "^7.0.0",
+    "vitest": "^2.1.4"
+  }
+}
