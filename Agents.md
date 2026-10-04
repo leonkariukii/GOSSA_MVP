@@ -1,48 +1,41 @@
 # Agent System Guidelines (`AGENTS.md`)
 
-## 1. Project Overview & Scope
-**GOSSA (Garage Operations & Service Administration)** is a specialized SaaS platform designed for automotive garage managers to streamline vehicle intakes, track technician availability, manage digital job card lifecycles, and handle spare parts billing. 
-
-This repository contains the web application client and backend API contract designed to run across workshop manager desktops and mobile shop-floor interfaces.
-
----
-
-## 2. Technology Stack & Technical Principles
-
-When writing or refactoring code in this repository, strictly adhere to the following stack and guidelines:
-
-* **Frontend Framework:** React (Vite) using Functional Components and standard React Hooks.
-* **Styling:** Tailwind CSS for all layout, spacing, typography, and state-driven UI states. Do not use custom raw CSS files unless adding specialized keyframe animations.
-* **State Management & Data Fetching:** 
-  * Use **TanStack Query (`@tanstack/react-query`)** for all server-state management, cache invalidation, and optimistic UI updates.
-  * Use **React Context API** or **Zustand** only for client-only global state (e.g., UI modal states, active shop bay selection, active user session).
-* **Validation & Schemas:** **Zod** schemas for validating form inputs and runtime API payloads.
-* **Backend Contract:** RESTful API returning standard RFC 8259 JSON format over HTTPS.
-* **Database Target:** PostgreSQL / Supabase with Row Level Security (RLS) enabled.
+## 1. Operating Rules for AI Agents
+1. **Read Specifications First:** Before modifying or creating code, consult `docs/SPEC.md`, `docs/DATABASE.md`, and `docs/WORKFLOWS.md`. Do NOT guess API routes, table schemas, or state transitions.
+2. **Never Break Contracts:** API request payloads, database column names, and state enum values must match `docs/SPEC.md` and `docs/DATABASE.md` exactly.
+3. **Strict Validation:** Use Zod schemas for form inputs and API response validation.
+4. **No Direct State Manipulation:** All status changes (e.g., mechanic duty status, job card state) must flow through defined RPC functions or TanStack Query mutations that preserve atomic side effects.
+5. **Ask When Uncertain:** If a requirement is ambiguous or absent from the `docs/` folder, state your assumption clearly before writing code.
 
 ---
 
-## 3. Repository Architecture
+## 2. Technical Stack & Tooling
 
-Keep the codebase modular, predictable, and feature-driven:
+* **Language:** TypeScript (Strict mode enabled)
+* **Frontend:** React 18+ (Vite), React Router v6+, Tailwind CSS
+* **State & Data Fetching:** TanStack Query v5 (`@tanstack/react-query`)
+* **Backend Platform:** Supabase (PostgreSQL, Auth, PostgREST, RLS, Edge Functions)
+* **Form & Validation:** React Hook Form + Zod
+* **Testing:** Vitest, React Testing Library, Mock Service Worker (MSW)
 
-```text
-gossa-app/
-├── docs/
-│   ├── SPEC.md                  # REST API & Business Logic Specification
-│   └── DATABASE.md              # Database Schema & Migrations
-├── src/
-│   ├── api/                     # Centralized API client & HTTP fetch wrappers
-│   ├── assets/                  # Images, SVGs, and static assets
-│   ├── components/              # Shared atomic UI components (Button, Modal, Input, Badge)
-│   ├── context/                 # Application Context Providers
-│   ├── features/                # Domain-driven feature modules
-│   │   ├── job-cards/           # Intake forms, assignment modals, queue lists
-│   │   ├── mechanics/           # Roster cards, status filters, workload metrics
-│   │   └── inventory/           # Parts catalog, stock alerts, job line items
-│   ├── hooks/                   # Generic custom React hooks
-│   ├── layouts/                 # Root App Layout, Navigation Bar, Sidebar
-│   ├── routes/                  # Route configurations and view pages
-│   └── utils/                   # Utility functions, formatters (currency, dates)
-├── AGENTS.md                    # Coding agent system instructions
-└── package.json
+---
+
+## 3. Essential CLI Commands
+
+```bash
+# Development
+npm run dev              # Starts Vite dev server
+npm run build            # Typecheck and production build
+npm run preview          # Preview production build locally
+
+# Code Quality & Testing
+npm run typecheck        # Run tsc --noEmit
+npm run lint             # ESLint execution
+npm run format           # Prettier code formatting
+npm run test             # Run unit and integration tests via Vitest
+npm run test:ui          # Vitest UI mode
+
+# Supabase Local Development
+npx supabase start       # Start local PostgreSQL / Auth containers
+npx supabase gen types   # Generate TypeScript types from local DB schema
+npx supabase db reset    # Apply migrations and seeds
