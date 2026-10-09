@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: gossa-mvp-api
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm run bootstrap:owner && npm start
+    disk:
+      name: gossa-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GOSSA_DATA_DIR
+        value: /var/data
+      - key: GOSSA_GARAGE_NAME
+        value: Northside Garage
+      - key: GOSSA_GARAGE_TIMEZONE
+        value: UTC
+      - key: GOSSA_OWNER_NAME
+        value: Owner User
+      - key: GOSSA_OWNER_EMAIL
+        sync: false
+      - key: GOSSA_OWNER_PASSWORD
+        sync: false

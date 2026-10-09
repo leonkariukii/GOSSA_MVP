@@ -1,9 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { env } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(__dirname, '../data');
+const dataDir = path.resolve(env.GOSSA_DATA_DIR || path.join(__dirname, '../data'));
 const storeFile = path.join(dataDir, 'store.json');
 let cachedStore = null;
 
