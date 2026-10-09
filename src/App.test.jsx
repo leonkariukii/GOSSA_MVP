@@ -1,6 +1,13 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import axios from 'axios';
 import App from './App';
+
+vi.mock('axios', () => ({
+  default: {
+    request: vi.fn(),
+  },
+}));
 
 const session = {
   user: { id: 'owner-1', name: 'Owner User', email: 'owner@example.com', role: 'owner' },
@@ -8,37 +15,32 @@ const session = {
   csrf_token: 'csrf-token',
 };
 
-function jsonResponse(body, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  };
+function jsonResponse(data, status = 200) {
+  return { data, status };
 }
 
 describe('App', () => {
   afterEach(() => {
     cleanup();
-    vi.unstubAllGlobals();
+    axios.request.mockReset();
   });
 
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: false,
-      status: 401,
-      json: async () => ({ error: { message: 'Authentication required.' } }),
-    })));
+    axios.request.mockRejectedValue({
+      response: { data: { error: { message: 'Authentication required.' } } },
+    });
   });
 
   it('renders the owner sign-in screen when no session is active', async () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: /gossa owner sign in/i })).toBeInTheDocument();
-    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/email/i)).toHaveValue('');
+    expect(screen.getByLabelText(/password/i)).toHaveValue('');
   });
 
   it('renders mechanics from the paginated list response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url) => {
+    axios.request.mockImplementation(async ({ url }) => {
       if (url.endsWith('/auth/me')) {
         return jsonResponse({ data: session });
       }
@@ -56,7 +58,7 @@ describe('App', () => {
         });
       }
       return jsonResponse({ data: {} });
-    }));
+    });
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'mechanics' }));
@@ -66,11 +68,11 @@ describe('App', () => {
 
   it('refreshes the mechanics list after a successful create', async () => {
     let mechanics = [];
-    vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+    axios.request.mockImplementation(async ({ url, method = 'get' }) => {
       if (url.endsWith('/auth/me')) {
         return jsonResponse({ data: session });
       }
-      if (url.endsWith('/mechanics') && options.method === 'POST') {
+      if (url.endsWith('/mechanics') && method.toUpperCase() === 'POST') {
         mechanics = [{
           id: 'mechanic-1',
           name: 'Alex Mechanic',
@@ -88,7 +90,7 @@ describe('App', () => {
         });
       }
       return jsonResponse({ data: {} });
-    }));
+    });
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'mechanics' }));
@@ -98,7 +100,7 @@ describe('App', () => {
   });
 
   it('renders jobs from the paginated list response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url) => {
+    axios.request.mockImplementation(async ({ url }) => {
       if (url.endsWith('/auth/me')) {
         return jsonResponse({ data: session });
       }
@@ -116,7 +118,7 @@ describe('App', () => {
         });
       }
       return jsonResponse({ data: {} });
-    }));
+    });
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'jobs' }));

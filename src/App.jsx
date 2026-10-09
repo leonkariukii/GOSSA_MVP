@@ -1,35 +1,39 @@
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import axios from 'axios';
 import { useMemo, useState } from 'react';
 
 async function fetchJson(path, options = {}) {
+  const { body, ...requestOptions } = options;
   const headers = {
     Accept: 'application/json',
     ...(options.headers || {}),
   };
 
-  if (options.body && !headers['Content-Type']) {
+  if (body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(`/api/v1${path}`, {
-    ...options,
-    headers,
-  });
+  try {
+    const response = await axios.request({
+      url: `/api/v1${path}`,
+      ...requestOptions,
+      data: body,
+      headers,
+    });
 
-  if (response.status === 204) {
-    return null;
+    if (response.status === 204) {
+      return null;
+    }
+
+    const payload = response.data;
+    if (Array.isArray(payload?.data)) {
+      return payload;
+    }
+
+    return payload.data ?? payload;
+  } catch (error) {
+    throw new Error(error?.response?.data?.error?.message || 'Request failed', { cause: error });
   }
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || 'Request failed');
-  }
-
-  if (Array.isArray(payload?.data)) {
-    return payload;
-  }
-
-  return payload.data ?? payload;
 }
 
 function useSession() {
@@ -44,8 +48,8 @@ function useSession() {
 
 function LoginPanel({ onLoggedIn }) {
   const queryClient = useQueryClient();
-  const [email, setEmail] = useState('owner@example.com');
-  const [password, setPassword] = useState('ChangeMe123!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const loginMutation = useMutation({
     mutationFn: (values) =>
@@ -71,11 +75,11 @@ function LoginPanel({ onLoggedIn }) {
       >
         <label>
           <span>Email</span>
-          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+          <input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} />
         </label>
         <label>
           <span>Password</span>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
         </label>
         <button type="submit" disabled={loginMutation.isPending}>
           {loginMutation.isPending ? 'Signing in…' : 'Sign in'}
